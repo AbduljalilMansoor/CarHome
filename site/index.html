@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Car Home — تثبيت</title>
+    <meta name="description" content="تقرير رحلة لشاشة جيتور G700: مقسّم حسب نمط القيادة والكهرباء أو المحرك. ثبّته من المتصفح بوصلة USB.">
+    <meta name="theme-color" content="#0b0f14">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%232dd4bf'/%3E%3Ctext x='12' y='16.5' font-size='12' font-weight='700' text-anchor='middle' fill='%230b0f14' font-family='sans-serif'%3ET%3C/text%3E%3C/svg%3E">
+    <link rel="stylesheet" href="home.css">
+</head>
+<body>
+<header class="bar">
+    <a class="brand" href="./"><span class="logo">T</span> Car Home</a>
+    <nav>
+        <a href="#adb">تفعيل ADB</a>
+        <a href="#install">التثبيت</a>
+        <a href="#faq">أسئلة</a>
+    </nav>
+</header>
+
+<main>
+<section class="hero">
+    <p class="kicker">جيتور G700 · أندرويد للسيارات</p>
+    <h1>Car Home</h1>
+    <p class="lead">لانشر (شاشة رئيسية) لشاشة جيتور G700: سرعة وبطارية ووقود ونمط القيادة مباشرة من السيارة، وشريط تطبيقات مفضلة، وقائمة بكل التطبيقات. يُثبَّت من المتصفح بوصلة USB في دقيقة، ثم تختاره كشاشة رئيسية.</p>
+    <div class="cta">
+        <a class="btn primary" href="#install">وصّل السيارة وثبّت</a>
+        <a class="btn" href="#adb">أول مرة؟ فعّل ADB</a>
+    </div>
+    <ul class="chips" id="env">
+        <li data-k="browser"><span>المتصفح</span><b>…</b></li>
+        <li data-k="webusb"><span>WebUSB</span><b>…</b></li>
+        <li data-k="secure"><span>اتصال آمن</span><b>…</b></li>
+    </ul>
+</section>
+
+<section id="adb" class="block">
+    <h2>الخطوة الأولى: تفعيل ADB في السيارة (مرة واحدة)</h2>
+    <p>ADB هو ما يسمح للكمبيوتر بتثبيت التطبيقات على شاشة السيارة. يجب تفعيله من قائمة مخفية في السيارة، وطريقة الدخول لها تختلف حسب الموديل وإصدار النظام.</p>
+    <ol class="steps">
+        <li>أوقف السيارة وشغّل الشاشة.</li>
+        <li>فعّل خيار <b>ADB</b> في قائمة الصيانة المخفية. شرح الخطوات لجيتور G700 عند موقع <a href="https://unlokit.net/?lang=ar" target="_blank" rel="noopener noreferrer">unlokit.net</a>، وهو موقع مستقل عنّا.</li>
+        <li>وصّل كابل USB بيانات بين الكمبيوتر ومنفذ USB في السيارة.</li>
+    </ol>
+    <p class="note">هذه الصفحة لا تفعّل ADB نيابةً عنك ولا تكسر أي حماية. أنت تشغّله بنفسك وتوافق على الاتصال من شاشة السيارة.</p>
+</section>
+
+<section id="install" class="block">
+    <h2>الخطوة الثانية: وصّل السيارة وثبّت</h2>
+    <div class="panel" id="installer">
+        <div class="status" id="status" role="status" aria-live="polite">جارٍ التحقق من المتصفح…</div>
+
+        <div class="latest" id="latest">آخر إصدار: …</div>
+
+        <button class="btn primary big" id="connect" type="button" disabled>وصّل السيارة</button>
+
+        <dl class="device" id="device" hidden>
+            <div><dt>الطراز</dt><dd id="d-model">—</dd></div>
+            <div><dt>أندرويد</dt><dd id="d-android">—</dd></div>
+            <div><dt>الرقم التسلسلي</dt><dd id="d-serial">—</dd></div>
+        </dl>
+
+        <div id="install-box" hidden>
+            <button class="btn primary big" id="install" type="button">ثبّت Car Home</button>
+            <div class="bar-outer" id="progress" hidden><div class="bar-inner" id="progress-bar"></div></div>
+        </div>
+
+        <ol class="log" id="log" hidden></ol>
+    </div>
+
+    <details class="perm">
+        <summary>ما الذي سيُمنح للتطبيق ولماذا؟</summary>
+        <ul>
+            <li><b>قراءة بيانات السيارة</b> (السرعة والطاقة والمسافة): لحساب الرحلة.</li>
+            <li><b>تثبيت التطبيقات</b>: ليعمل زر «تحديث» داخل التطبيق. شاشة السيارة لا تعرض هذا الخيار في الإعدادات، فيُمنح هنا مرة واحدة.</li>
+            <li><b>الإشعارات</b>: إشعار الرحلة الجارية.</li>
+            <li><b>استثناء من توفير الطاقة</b>: حتى لا يوقف النظام تسجيل الرحلة.</li>
+        </ul>
+        <p>كل هذا يُنفَّذ بأوامر ADB من متصفحك أنت، ولا يمرّ عبر أي سيرفر. التطبيق يُنزَّل من نفس هذه الصفحة ويُتحقَّق من بصمته قبل التثبيت.</p>
+    </details>
+</section>
+
+<section id="faq" class="block">
+    <h2>أسئلة شائعة</h2>
+    <details><summary>أي متصفح أستخدم؟</summary><p>Chrome أو Edge على الكمبيوتر (أو Chrome على أندرويد مع محوّل OTG). فايرفوكس وسفاري لا يدعمان WebUSB. في Brave قد تحتاج إيقاف الدروع (Shields) لهذا الموقع.</p></details>
+    <details><summary>يقول «الجهاز مشغول» أو لا يتصل</summary><p>أغلق أي برنامج آخر يستخدم ADB (مثل <code>adb</code> على جهازك: نفّذ <code>adb kill-server</code>)، أعد توصيل الكابل، ثم اضغط «وصّل السيارة» من جديد.</p></details>
+    <details><summary>لم تظهر نافذة الموافقة على شاشة السيارة</summary><p>ستظهر رسالة «السماح بتصحيح USB؟» على شاشة السيارة عند أول اتصال. وافق عليها (ويمكنك تفعيل «السماح دائماً» لهذا الكمبيوتر).</p></details>
+    <details><summary>كيف يتحدّث التطبيق بعد ذلك؟</summary><p>من زر «تحديث» داخل التطبيق: ينزّل آخر نسخة ويثبّتها دون كمبيوتر. إذا حذفت التطبيق وثبّته من مكان آخر، ثبّته من هذه الصفحة مرة واحدة ليعمل التحديث.</p></details>
+    <details><summary>هل هذا مشروع رسمي؟</summary><p>لا. المشروع غير تابع لجيتور ولا شيري ولا أوتولينك. يقرأ القيم عبر مكتبات موجودة في السيارة، وقد يتوقف بعد تحديث النظام. استخدمه على مسؤوليتك.</p></details>
+</section>
+</main>
+
+<footer>
+    <p>Car Home — غير تابع لجيتور أو شيري أو أوتولينك.</p>
+    <p>التثبيت من المتصفح يستخدم مكتبة <a href="https://github.com/yume-chan/ya-webadb" target="_blank" rel="noopener noreferrer">Tango ADB</a> (رخصة MIT) — <a href="vendor/LICENSES.txt">التراخيص</a>.</p>
+</footer>
+
+<script src="vendor/g700-adb.js"></script>
+<script src="install.js"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+// واجهات فارغة لمكتبة Autolink، تُستخدم وقت البناء فقط ولا تدخل في التطبيق.
+// التنفيذ الحقيقي موجود في نظام شاشة السيارة.
+plugins {
+    id 'java-library'
+}
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}

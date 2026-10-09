@@ -1,0 +1,54 @@
+plugins {
+    id 'com.android.application'
+}
+
+// رقم البناء من GitHub Actions: كل بناء جديد = رقم نسخة أكبر، فيعرف التطبيق أن هناك تحديثاً
+def runNumber = (System.getenv("GITHUB_RUN_NUMBER") ?: "0").toInteger()
+
+android {
+    namespace 'com.carhome.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.carhome.app'
+        minSdk 28
+        targetSdk 33
+        versionCode 100 + runNumber
+        versionName "1.0." + runNumber
+        // مستودع GitHub الذي بُني منه التطبيق (owner/repo) يأتي تلقائياً من GitHub Actions،
+        // فيعمل التحديث الذاتي بدون أي تعديل يدوي. في البناء المحلي يبقى فارغاً (التحديث معطّل).
+        resValue "string", "update_repo", (System.getenv("GITHUB_REPOSITORY") ?: "")
+    }
+
+    // مفتاح توقيع ثابت (يأتي من سر SIGNING_KEY في GitHub) حتى يقبل أندرويد التحديث فوق النسخة القديمة
+    signingConfigs {
+        release {
+            storeFile file("release.jks")
+            storePassword "carhome-sign-2026"
+            keyAlias "carhome"
+            keyPassword "carhome-sign-2026"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig file("release.jks").exists() ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+}
+
+dependencies {
+    // للبناء فقط: الكلاس الحقيقي يأتي من نظام السيارة (uses-library autolink.sdk)
+    compileOnly project(':autolink-stubs')
+}

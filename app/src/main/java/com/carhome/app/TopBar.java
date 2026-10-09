@@ -102,7 +102,7 @@ final class TopBar {
     }
 
     private LinearLayout.LayoutParams barLp() {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, Ui.dp(ctx, 8));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, Ui.dp(ctx, 10));
         lp.topMargin = Ui.dp(ctx, 2);
         lp.bottomMargin = Ui.dp(ctx, 2);
         return lp;

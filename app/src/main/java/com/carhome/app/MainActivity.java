@@ -11,7 +11,6 @@ import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
-import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -35,20 +34,20 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Car Home — الشاشة الرئيسية، أربعة أقسام:
+ * Car Home — الشاشة الرئيسية:
  *  1) شريط علوي: بيانات السيارة الحية والساعة.
- *  2) منطقة يسار + 3) منطقة يمين (50:50 ثابتة): في كل منهما تطبيق مختلف، ويمكن تغييره في أي وقت.
- *  4) شريط سفلي: اختيار الشاشة + 5 خانات مفضلة (+) + زر «التطبيقات» + الودجات + الإعدادات.
- * ويمكن فتحه من أي شاشة بالأيقونة العائمة أو السحب من الحافة (OverlayService).
+ *  2) جانب يسار + 3) جانب يمين (50:50 ثابتة): تطبيقان معاً، يُغيَّران بأزرارهما فقط.
+ *  4) شريط سفلي: 5 مفضلة + «التطبيقات» + 3 خانات ودجات + WIDGETS + ⚙.
+ * أي تطبيق يُفتح من المفضلة أو القائمة يسأل: الشاشة الأمامية أم الخلفية؟ ثم يعمل في نافذة جديدة.
  */
 public class MainActivity extends Activity {
     static final String PREFS = "carhome";
-    static final String KEY_PINNED = "pinned", KEY_DISPLAY = "display";
-    static final String KEY_BUBBLE = "bubble", KEY_EDGE = "edge";
-    static final String KEY_Z0 = "z0", KEY_Z1 = "z1", KEY_ZD0 = "zd0", KEY_ZD1 = "zd1";
-    static final String KEY_MT = "mt", KEY_MB = "mb", KEY_WINDOW = "window";
+    static final String KEY_PINNED = "pinned", KEY_WSLOTS = "wslots";
+    static final String KEY_BUBBLE = "bubble", KEY_EDGE = "edge", KEY_WINDOW = "window";
+    static final String KEY_Z0 = "z0", KEY_Z1 = "z1";
+    static final String KEY_MT = "mt", KEY_MB = "mb";
     static final String NEW_TRIP_PKG = "com.newtrip.app";
-    static final int FAV_SLOTS = 5;
+    static final int FAV_SLOTS = 5, WIDGET_SLOTS = 3;
     private static final int[] MARGIN_STEPS = {0, 30, 60, 90, 120, 160};
     private static final String[] ZONE_NAMES = {"اليسار", "اليمين"};
 
@@ -66,15 +65,12 @@ public class MainActivity extends Activity {
 
     // الحالة
     private final String[] zoneContent = {"", ""};
-    private final int[] zoneDisplay = {0, 0};
-    private int activeZone = 0;
-    private int selectedDisplay = WindowLauncher.FRONT;
-    private long lastApply;
+    private final long[] zoneLaunchedAt = {0, 0};
     private int pickMode = PICK_NONE, pickIndex = -1;
 
     // واجهة
     private FrameLayout rootFrame, appsPage;
-    private LinearLayout main, zonesRow, dockRow, appsCol;
+    private LinearLayout main, zonesRow, dockRow, widgetRow, appsCol;
     private TopBar topBar;
     private final LinearLayout[] zoneCard = new LinearLayout[2];
     private final FrameLayout[] zoneBody = new FrameLayout[2];
@@ -82,7 +78,8 @@ public class MainActivity extends Activity {
     private final ImageView[] zoneIcon = new ImageView[2];
     private final TextView[] zoneChange = new TextView[2];
     private final TextView[] zoneClose = new TextView[2];
-    private TextView displayBtn, appsTitle, appsHint;
+    private final Widget[] slotWidget = new Widget[WIDGET_SLOTS];
+    private TextView appsTitle, appsHint;
     private GridLayout grid;
 
     private List<AppItem> apps = new ArrayList<>();
@@ -92,6 +89,9 @@ public class MainActivity extends Activity {
     private final Runnable tick = new Runnable() {
         @Override public void run() {
             topBar.render(car.live);
+            for (Widget w : slotWidget) {
+                if (w != null) { try { w.refresh(); } catch (Throwable ignored) { } }
+            }
             ui.postDelayed(this, 1000);
         }
     };
@@ -141,7 +141,7 @@ public class MainActivity extends Activity {
 
         renderZones();
         renderDock();
-        updateDisplayButton();
+        renderWidgets();
         loadApps();
         checkUpdateQuietly();
         try { OverlayService.sync(this); } catch (Exception ignored) { }
@@ -171,12 +171,14 @@ public class MainActivity extends Activity {
         car.release();
     }
 
-    /** زر Home أو الأيقونة العائمة: أغلق القوائم وأعد إظهار تطبيقات الجانبين. */
+    /**
+     * زر Home أو الأيقونة العائمة: أغلق القوائم فقط.
+     * (لا نعيد تشغيل تطبيقات الجانبين تلقائياً هنا: كان ذلك يسبب حلقة إعادة تشغيل متكررة تُجمّد النظام.)
+     */
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         hideApps();
-        applyZones();
     }
 
     @Override
@@ -186,20 +188,15 @@ public class MainActivity extends Activity {
 
     // ======================= الحالة المحفوظة =======================
     private void loadState() {
-        selectedDisplay = prefs.getInt(KEY_DISPLAY, WindowLauncher.FRONT);
-        if (selectedDisplay != WindowLauncher.FRONT && selectedDisplay != WindowLauncher.REAR) selectedDisplay = WindowLauncher.FRONT;
         zoneContent[0] = cleanZone(prefs.getString(KEY_Z0, ""));
         zoneContent[1] = cleanZone(prefs.getString(KEY_Z1, ""));
-        zoneDisplay[0] = prefs.getInt(KEY_ZD0, 0);
-        zoneDisplay[1] = prefs.getInt(KEY_ZD1, 0);
     }
 
-    /** نسخة سابقة كانت تحفظ "dash" للوحة السيارة (انتقلت الآن إلى الشريط العلوي). */
+    /** نسخ سابقة حفظت "dash" للوحة السيارة (انتقلت إلى الشريط العلوي). */
     private static String cleanZone(String s) { return s == null || s.equals("dash") ? "" : s; }
 
     private void saveZones() {
-        prefs.edit().putString(KEY_Z0, zoneContent[0]).putString(KEY_Z1, zoneContent[1])
-                .putInt(KEY_ZD0, zoneDisplay[0]).putInt(KEY_ZD1, zoneDisplay[1]).apply();
+        prefs.edit().putString(KEY_Z0, zoneContent[0]).putString(KEY_Z1, zoneContent[1]).apply();
     }
 
     private void applyMargins() {
@@ -233,7 +230,7 @@ public class MainActivity extends Activity {
         if (pollThread != null) { pollThread.quitSafely(); pollThread = null; }
     }
 
-    // ======================= المنطقتان (50:50 ثابتة) =======================
+    // ======================= الجانبان (50:50 ثابتة) =======================
     private View buildZones() {
         zonesRow = new LinearLayout(this);
         zonesRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -264,7 +261,14 @@ public class MainActivity extends Activity {
         zoneChange[z].setOnClickListener(v -> startPick(PICK_ZONE, z));
         head.addView(zoneChange[z]);
         zoneClose[z] = headButton("✕", Ui.MUTED);
-        zoneClose[z].setOnClickListener(v -> { zoneContent[z] = ""; saveZones(); renderZone(z); });
+        // ✕ تُفرغ الجانب وتُغلق تطبيقه
+        zoneClose[z].setOnClickListener(v -> {
+            String pkg = zoneContent[z];
+            zoneContent[z] = "";
+            saveZones();
+            renderZone(z);
+            if (!pkg.isEmpty()) WindowLauncher.closeApps(this, Collections.singletonList(pkg));
+        });
         head.addView(zoneClose[z]);
         card.addView(head, new LinearLayout.LayoutParams(-1, -2));
 
@@ -273,6 +277,7 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(-1, 0, 1f);
         blp.topMargin = dp(8);
         card.addView(zoneBody[z], blp);
+        card.setBackground(Ui.round(Ui.CARD, dp(16)));
         return card;
     }
 
@@ -282,25 +287,11 @@ public class MainActivity extends Activity {
         return t;
     }
 
-    private void setActive(int z) {
-        activeZone = z;
-        highlightZones();
-    }
-
-    private void highlightZones() {
-        for (int i = 0; i < 2; i++) {
-            GradientDrawable g = Ui.round(Ui.CARD, dp(16));
-            g.setStroke(dp(3), Ui.CARD);
-            zoneCard[i].setBackground(g);
-        }
-    }
-
     private void renderZones() { renderZone(0); renderZone(1); }
 
     private void renderZone(final int z) {
         zoneBody[z].removeAllViews();
         zoneIcon[z].setImageDrawable(null);
-        highlightZones();
         String c = zoneContent[z];
         boolean empty = c.isEmpty();
         zoneChange[z].setVisibility(empty ? View.GONE : View.VISIBLE);
@@ -331,10 +322,7 @@ public class MainActivity extends Activity {
                 big.setImageDrawable(a.icon);
                 col.addView(big, new LinearLayout.LayoutParams(dp(96), dp(96)));
             }
-            boolean other = zoneDisplay[z] != WindowLauncher.FRONT;
-            TextView t = Ui.text(this, other
-                    ? "يعمل على " + WindowLauncher.displayLabel(zoneDisplay[z], null)
-                    : "التطبيق يعمل في هذا الجانب\nاضغط لإعادة تشغيله هنا", 16, Ui.MUTED, false);
+            TextView t = Ui.text(this, "التطبيق يعمل في هذا الجانب\nاضغط لإعادة تشغيله هنا", 16, Ui.MUTED, false);
             t.setGravity(Gravity.CENTER);
             t.setPadding(0, dp(8), 0, 0);
             col.addView(t);
@@ -343,105 +331,72 @@ public class MainActivity extends Activity {
         zoneBody[z].addView(col, new FrameLayout.LayoutParams(-1, -1));
     }
 
-    /** تعيين تطبيق لجانب وتشغيله على الشاشة المختارة. */
+    /** تعيين تطبيق لجانب وتشغيله فيه (على الشاشة الأمامية). */
     private void assign(int z, AppItem a) {
-        activeZone = z;
         zoneContent[z] = a.pkg;
-        zoneDisplay[z] = selectedDisplay;
         saveZones();
         renderZone(z);
         launchZone(z);
     }
 
+    /** تشغيل تطبيق الجانب بطلب صريح من المستخدم فقط (بدون أي إعادة تشغيل تلقائية). */
     private void launchZone(final int z) {
         String c = zoneContent[z];
         if (c.isEmpty()) return;
+        long now = System.currentTimeMillis();
+        if (now - zoneLaunchedAt[z] < 1500) return;   // منع الضغط المتكرر
+        zoneLaunchedAt[z] = now;
         final AppItem a = find(c);
         if (a == null) { toast("التطبيق غير مثبّت"); return; }
-        final int d = zoneDisplay[z];
         zoneBody[z].post(() -> {
-            Rect r = null;
-            if (d == WindowLauncher.FRONT) {
-                int[] loc = new int[2];
-                zoneBody[z].getLocationOnScreen(loc);
-                r = new Rect(loc[0], loc[1], loc[0] + zoneBody[z].getWidth(), loc[1] + zoneBody[z].getHeight());
-            }
-            String err = WindowLauncher.launch(this, a, d, r);
+            int[] loc = new int[2];
+            zoneBody[z].getLocationOnScreen(loc);
+            Rect r = new Rect(loc[0], loc[1], loc[0] + zoneBody[z].getWidth(), loc[1] + zoneBody[z].getHeight());
+            String err = WindowLauncher.launch(this, a, WindowLauncher.FRONT, r);
             if (err != null) toast("تعذر التشغيل: " + err);
         });
-    }
-
-    /** إعادة إظهار تطبيقات الجانبين (عند العودة إلى Car Home). */
-    private void applyZones() {
-        long now = System.currentTimeMillis();
-        if (now - lastApply < 1500) return;
-        lastApply = now;
-        launchZone(0);
-        launchZone(1);
     }
 
     // ======================= الشريط السفلي =======================
     private View buildBottomBar() {
         LinearLayout bar = Ui.row(this);
         bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setBaselineAligned(false);
         bar.setPadding(0, dp(8), 0, 0);
-
-        displayBtn = Ui.text(this, "", 16, Ui.TEXT, true);
-        displayBtn.setBackground(Ui.round(Ui.CARD2, dp(14)));
-        displayBtn.setPadding(dp(16), dp(16), dp(16), dp(16));
-        displayBtn.setOnClickListener(v -> showDisplayDialog());
-        bar.addView(displayBtn, new LinearLayout.LayoutParams(-2, -2));
 
         dockRow = new LinearLayout(this);
         dockRow.setOrientation(LinearLayout.HORIZONTAL);
         dockRow.setGravity(Gravity.CENTER);
         dockRow.setBackground(Ui.round(Ui.CARD, dp(18)));
-        dockRow.setPadding(dp(8), dp(6), dp(8), dp(6));
-        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(0, -2, 1f);
-        dlp.setMargins(dp(10), 0, dp(10), 0);
+        dockRow.setPadding(dp(6), dp(6), dp(6), dp(6));
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(0, -1, 5.4f);
+        dlp.rightMargin = dp(8);
         bar.addView(dockRow, dlp);
+
+        widgetRow = new LinearLayout(this);
+        widgetRow.setOrientation(LinearLayout.HORIZONTAL);
+        widgetRow.setGravity(Gravity.CENTER);
+        widgetRow.setBackground(Ui.round(Ui.CARD, dp(18)));
+        widgetRow.setPadding(dp(6), dp(6), dp(6), dp(6));
+        LinearLayout.LayoutParams wlp = new LinearLayout.LayoutParams(0, -1, 5.0f);
+        wlp.rightMargin = dp(8);
+        bar.addView(widgetRow, wlp);
 
         TextView gear = Ui.text(this, "⚙", 26, Ui.TEXT, true);
         gear.setGravity(Gravity.CENTER);
         gear.setBackground(Ui.round(Ui.CARD2, dp(14)));
         gear.setOnClickListener(v -> showSettings());
-        LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(dp(62), dp(62));
+        LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(dp(56), dp(56));
         glp.rightMargin = dp(8);
         bar.addView(gear, glp);
 
-        TextView widgets = Ui.text(this, "▦  WIDGETS", 15, Ui.TEXT, true);
+        TextView widgets = Ui.text(this, "▦\nWIDGETS", 12, Ui.TEXT, true);
         widgets.setGravity(Gravity.CENTER);
         widgets.setBackground(Ui.round(Ui.CARD2, dp(14)));
-        widgets.setPadding(dp(16), dp(16), dp(16), dp(16));
-        widgets.setOnClickListener(v -> showWidgets());
-        bar.addView(widgets, new LinearLayout.LayoutParams(-2, -2));
+        widgets.setPadding(dp(10), dp(8), dp(10), dp(8));
+        widgets.setOnClickListener(v -> showWidgetLibrary(-1));
+        bar.addView(widgets, new LinearLayout.LayoutParams(-2, dp(56)));
         return bar;
-    }
-
-    private void updateDisplayButton() {
-        displayBtn.setText("▾  Display " + selectedDisplay + (selectedDisplay == WindowLauncher.FRONT ? " (Front)"
-                : selectedDisplay == WindowLauncher.REAR ? " (Rear)" : ""));
-    }
-
-    private void showDisplayDialog() {
-        final List<int[]> ds = WindowLauncher.displays(this);
-        String[] labels = new String[ds.size()];
-        int checked = 0;
-        for (int i = 0; i < ds.size(); i++) {
-            int id = ds.get(i)[0];
-            labels[i] = WindowLauncher.displayLabel(id, null);
-            if (id == selectedDisplay) checked = i;
-        }
-        new AlertDialog.Builder(this)
-                .setTitle("الشاشة التي يعمل عليها التطبيق")
-                .setSingleChoiceItems(labels, checked, (d, which) -> {
-                    selectedDisplay = ds.get(which)[0];
-                    prefs.edit().putInt(KEY_DISPLAY, selectedDisplay).apply();
-                    updateDisplayButton();
-                    d.dismiss();
-                })
-                .setNegativeButton("إلغاء", null)
-                .show();
     }
 
     // ---------- المفضلة: خمس خانات ثابتة ----------
@@ -473,25 +428,24 @@ public class MainActivity extends Activity {
             }
             dockRow.addView(cell, dockLp());
         }
-        // زر كل التطبيقات
         LinearLayout all = dockCell(null, "التطبيقات");
-        ((TextView) ((LinearLayout) all).getChildAt(0)).setText("⊞");
+        ((TextView) all.getChildAt(0)).setText("⊞");
         all.setOnClickListener(v -> startPick(PICK_NONE, -1));
         dockRow.addView(all, dockLp());
     }
 
     private LinearLayout.LayoutParams dockLp() {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
-        lp.setMargins(dp(8), 0, dp(8), 0);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1f);
+        lp.setMargins(dp(2), 0, dp(2), 0);
         return lp;
     }
 
-    /** خانة: أيقونة (أو علامة + إن لم يوجد) وتحتها اسم. الابن الأول دائماً الأيقونة. */
+    /** خانة: أيقونة (أو ＋ إن لم يوجد) وتحتها اسم. الابن الأول دائماً الأيقونة. */
     private LinearLayout dockCell(Drawable icon, String label) {
         LinearLayout cell = new LinearLayout(this);
         cell.setOrientation(LinearLayout.VERTICAL);
         cell.setGravity(Gravity.CENTER_HORIZONTAL);
-        cell.setPadding(dp(8), dp(2), dp(8), dp(2));
+        cell.setPadding(dp(2), dp(2), dp(2), dp(2));
         cell.setClickable(true);
         View iconView;
         if (icon != null) {
@@ -499,32 +453,124 @@ public class MainActivity extends Activity {
             iv.setImageDrawable(icon);
             iconView = iv;
         } else {
-            TextView plus = Ui.text(this, "＋", 28, Ui.MUTED, true);
+            TextView plus = Ui.text(this, "＋", 26, Ui.MUTED, true);
             plus.setGravity(Gravity.CENTER);
             plus.setBackground(Ui.round(Ui.CARD2, dp(14)));
             iconView = plus;
         }
-        cell.addView(iconView, new LinearLayout.LayoutParams(dp(52), dp(52)));
-        TextView t = Ui.text(this, label, 12, Ui.MUTED, false);
+        cell.addView(iconView, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        TextView t = Ui.text(this, label, 11, Ui.MUTED, false);
         t.setGravity(Gravity.CENTER);
         t.setSingleLine(true);
-        t.setMaxWidth(dp(84));
         t.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        cell.addView(t);
+        cell.addView(t, new LinearLayout.LayoutParams(-1, -2));
         return cell;
     }
 
-    private void favMenu(final int slot, AppItem a) {
-        String[] items = {"تغيير التطبيق", "إزالة من المفضلة"};
+    private void favMenu(final int slot, final AppItem a) {
+        String[] items = {"تغيير التطبيق", "إزالة من المفضلة", "إغلاق التطبيق (إن كان مفتوحاً)"};
         new AlertDialog.Builder(this).setTitle(a.label).setItems(items, (d, which) -> {
             if (which == 0) {
                 startPick(PICK_FAV, slot);
-            } else {
+            } else if (which == 1) {
                 String[] f = getFavs();
                 f[slot] = "";
                 setFavs(f);
+            } else {
+                WindowLauncher.closeApps(this, Collections.singletonList(a.pkg));
             }
         }).show();
+    }
+
+    // ---------- خانات الودجات ----------
+    private String[] getWidgetSlots() {
+        String[] f = new String[WIDGET_SLOTS];
+        Arrays.fill(f, "");
+        String[] p = prefs.getString(KEY_WSLOTS, "").split(",", -1);
+        for (int i = 0; i < WIDGET_SLOTS && i < p.length; i++) f[i] = p[i];
+        return f;
+    }
+
+    private void setWidgetSlots(String[] f) {
+        prefs.edit().putString(KEY_WSLOTS, String.join(",", f)).apply();
+        renderWidgets();
+    }
+
+    private void renderWidgets() {
+        widgetRow.removeAllViews();
+        String[] slots = getWidgetSlots();
+        for (int i = 0; i < WIDGET_SLOTS; i++) {
+            final int slot = i;
+            Widget w = slots[i].isEmpty() ? null : Widget.create(slots[i], this);
+            slotWidget[i] = w;
+            LinearLayout.LayoutParams lp;
+            if (w == null) {
+                LinearLayout empty = new LinearLayout(this);
+                empty.setOrientation(LinearLayout.VERTICAL);
+                empty.setGravity(Gravity.CENTER);
+                empty.setBackground(Ui.round(Ui.CARD2, dp(14)));
+                empty.addView(Ui.text(this, "＋", 22, Ui.MUTED, true));
+                empty.addView(Ui.text(this, "ودجت", 11, Ui.MUTED, false));
+                empty.setOnClickListener(v -> showWidgetLibrary(slot));
+                lp = new LinearLayout.LayoutParams(0, -1, 0.8f);
+                widgetRow.addView(empty, lp);
+            } else {
+                View v = w.createView();
+                v.setBackground(Ui.round(Ui.CARD2, dp(14)));
+                v.setOnLongClickListener(x -> { widgetMenu(slot); return true; });
+                lp = new LinearLayout.LayoutParams(0, -1, w.weight());
+                widgetRow.addView(v, lp);
+            }
+            lp.setMargins(dp(3), 0, dp(3), 0);
+        }
+    }
+
+    private void widgetMenu(final int slot) {
+        String[] items = {"تغيير الودجت", "إزالة الودجت"};
+        new AlertDialog.Builder(this).setTitle("الودجت").setItems(items, (d, which) -> {
+            if (which == 0) {
+                showWidgetLibrary(slot);
+            } else {
+                String[] s = getWidgetSlots();
+                s[slot] = "";
+                setWidgetSlots(s);
+            }
+        }).show();
+    }
+
+    /** مكتبة الودجات. targetSlot = -1: اسأل عن الخانة بعد الاختيار. */
+    private void showWidgetLibrary(final int targetSlot) {
+        final String[] ids = Widget.ALL;
+        String[] items = new String[ids.length];
+        for (int i = 0; i < ids.length; i++) {
+            Widget w = Widget.create(ids[i], this);
+            items[i] = w.icon() + "  " + w.title() + "\n" + w.description();
+        }
+        new AlertDialog.Builder(this).setTitle("مكتبة الودجات")
+                .setItems(items, (d, which) -> {
+                    if (targetSlot >= 0) putWidget(targetSlot, ids[which]);
+                    else chooseWidgetSlot(ids[which]);
+                })
+                .setNegativeButton("إغلاق", null).show();
+    }
+
+    private void chooseWidgetSlot(final String id) {
+        String[] cur = getWidgetSlots();
+        String[] items = new String[WIDGET_SLOTS];
+        for (int i = 0; i < WIDGET_SLOTS; i++) {
+            Widget w = cur[i].isEmpty() ? null : Widget.create(cur[i], this);
+            items[i] = "الخانة " + (i + 1) + (w == null ? " — فارغة" : " — " + w.title());
+        }
+        new AlertDialog.Builder(this).setTitle("ضع الودجت في أي خانة؟")
+                .setItems(items, (d, which) -> putWidget(which, id))
+                .setNegativeButton("إلغاء", null).show();
+    }
+
+    private void putWidget(int slot, String id) {
+        String[] s = getWidgetSlots();
+        for (int i = 0; i < s.length; i++) if (s[i].equals(id)) s[i] = "";   // الودجت مرة واحدة
+        s[slot] = id;
+        setWidgetSlots(s);
     }
 
     // ======================= كل التطبيقات (وللاختيار) =======================
@@ -599,9 +645,21 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** فتح التطبيق في نافذة جديدة قابلة للإغلاق (أو بملء الشاشة حسب الإعدادات). */
-    private void openWindow(AppItem a) {
-        String err = WindowLauncher.launchWindow(this, a, selectedDisplay, prefs.getBoolean(KEY_WINDOW, true));
+    // ======================= تشغيل التطبيقات =======================
+    /** يسأل: الشاشة الأمامية أم الخلفية؟ ثم يفتح التطبيق في نافذة جديدة (أو بملء الشاشة حسب الإعدادات). */
+    private void openWindow(AppItem a) { askDisplay(a, prefs.getBoolean(KEY_WINDOW, true)); }
+
+    private void askDisplay(final AppItem a, final boolean windowed) {
+        new AlertDialog.Builder(this)
+                .setTitle(a.label + " — على أي شاشة؟")
+                .setPositiveButton("الأمامية (Front)", (d, w) -> startApp(a, WindowLauncher.FRONT, windowed))
+                .setNegativeButton("الخلفية (Rear)", (d, w) -> startApp(a, WindowLauncher.REAR, windowed))
+                .setNeutralButton("إلغاء", null)
+                .show();
+    }
+
+    private void startApp(AppItem a, int display, boolean windowed) {
+        String err = WindowLauncher.launchWindow(this, a, display, windowed);
         if (err != null) toast("تعذر التشغيل: " + err);
     }
 
@@ -670,6 +728,7 @@ public class MainActivity extends Activity {
         String[] items = {
                 favIdx >= 0 ? "إزالة من المفضلة" : "إضافة إلى المفضلة",
                 "تشغيل بملء الشاشة",
+                "إغلاق التطبيق (إن كان مفتوحاً)",
                 "معلومات التطبيق",
                 "حذف التطبيق"
         };
@@ -685,20 +744,16 @@ public class MainActivity extends Activity {
                 setFavs(fav);
             } else if (which == 1) {
                 hideApps();
-                String err = WindowLauncher.launch(this, a, selectedDisplay, null);
-                if (err != null) toast("تعذر التشغيل: " + err);
+                askDisplay(a, false);
             } else if (which == 2) {
+                hideApps();
+                WindowLauncher.closeApps(this, Collections.singletonList(a.pkg));
+            } else if (which == 3) {
                 startSafely(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + a.pkg)));
             } else {
                 startSafely(new Intent(Intent.ACTION_DELETE, Uri.parse("package:" + a.pkg)));
             }
         }).show();
-    }
-
-    // ======================= الودجات =======================
-    private void showWidgets() {
-        message("الودجات الإضافية — قريباً\n\nبيانات السيارة تظهر دائماً في الشريط العلوي. "
-                + "هنا سنضيف لاحقاً ودجات أخرى (طقس، موسيقى، اختصارات…).");
     }
 
     // ======================= الإعدادات =======================
@@ -707,8 +762,9 @@ public class MainActivity extends Activity {
         final boolean windowed = prefs.getBoolean(KEY_WINDOW, true);
         String[] items = {
                 (windowed ? "☑" : "☐") + "  فتح التطبيقات في نافذة جديدة (وإلا بملء الشاشة)",
-                (bubble ? "☑" : "☐") + "  الأيقونة العائمة للوصول من أي شاشة",
+                (bubble ? "☑" : "☐") + "  الأيقونة العائمة (مطوّلاً عليها = إغلاق كل النوافذ)",
                 (edge ? "☑" : "☐") + "  السحب من حافتي الشاشة لفتح Car Home",
+                "إغلاق كل النوافذ والتطبيقات المفتوحة من Car Home",
                 "الهامش السفلي: " + prefs.getInt(KEY_MB, 0) + " dp   (إن غطّى شريط السيارة الأزرار السفلية)",
                 "الهامش العلوي: " + prefs.getInt(KEY_MT, 0) + " dp",
                 "فحص قدرات النوافذ والشاشات والتخطيط",
@@ -728,10 +784,16 @@ public class MainActivity extends Activity {
                 }
                 showSettings();
             } else if (which == 3) {
-                pickMargin(KEY_MB, "الهامش السفلي");
+                zoneContent[0] = "";
+                zoneContent[1] = "";
+                saveZones();
+                renderZones();
+                WindowLauncher.closeAll(this);
             } else if (which == 4) {
-                pickMargin(KEY_MT, "الهامش العلوي");
+                pickMargin(KEY_MB, "الهامش السفلي");
             } else if (which == 5) {
+                pickMargin(KEY_MT, "الهامش العلوي");
+            } else if (which == 6) {
                 message(WindowLauncher.capabilityReport(this) + layoutReport());
             } else {
                 onUpdateClicked();

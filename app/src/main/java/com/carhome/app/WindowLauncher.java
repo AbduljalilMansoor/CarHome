@@ -1,18 +1,25 @@
 package com.carhome.app;
 
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.app.ActivityOptions;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Rect;
 import android.hardware.display.DisplayManager;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
 import android.view.Display;
+import android.widget.Toast;
 
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
-import java.util.TreeSet;
+import java.util.Set;
 
 /**
  * تشغيل تطبيق في منطقة محددة من الشاشة وعلى شاشة محددة.
@@ -43,13 +50,64 @@ final class WindowLauncher {
                 } catch (Throwable ignored) { }
             }
             act.startActivity(i, o.toBundle());
+            markOpen(act, a.pkg);
             return null;
         } catch (Throwable t) {
             return t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
         }
     }
 
+    private static final String KEY_OPEN = "open";
     private static int cascade = 0;
+
+    // ---------- تتبع التطبيقات التي فتحها Car Home وإغلاقها ----------
+    private static SharedPreferences prefs(Context c) {
+        return c.getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE);
+    }
+
+    static void markOpen(Context c, String pkg) {
+        Set<String> s = new HashSet<>(prefs(c).getStringSet(KEY_OPEN, new HashSet<String>()));
+        s.add(pkg);
+        prefs(c).edit().putStringSet(KEY_OPEN, s).apply();
+    }
+
+    static Set<String> openApps(Context c) {
+        return new HashSet<>(prefs(c).getStringSet(KEY_OPEN, new HashSet<String>()));
+    }
+
+    static void closeAll(Context c) { closeApps(c, openApps(c)); }
+
+    /**
+     * نظام السيارة لا يرسم زر إغلاق لنوافذ التطبيقات، وتطبيق عادي لا يملك صلاحية إغلاق نافذة تطبيق آخر مباشرة.
+     * الحل: نُرجع Car Home للأمام فيغطي النوافذ فتصبح التطبيقات «في الخلفية»، ثم نطلب من النظام إنهاء
+     * عملياتها (KILL_BACKGROUND_PROCESSES). التطبيق الذي يشغّل صوتاً (خدمة أمامية) قد لا يُغلق بهذه الطريقة.
+     */
+    static void closeApps(final Context c, Collection<String> pkgs) {
+        final List<String> list = new ArrayList<>(pkgs);
+        if (list.isEmpty()) {
+            Toast.makeText(c, "لا توجد تطبيقات مفتوحة من Car Home", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Toast.makeText(c, "جاري إغلاق التطبيقات…", Toast.LENGTH_SHORT).show();
+        try {
+            c.startActivity(new Intent(c, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                    | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP));
+        } catch (Exception ignored) { }
+        final ActivityManager am = (ActivityManager) c.getSystemService(Context.ACTIVITY_SERVICE);
+        Handler h = new Handler(Looper.getMainLooper());
+        for (long delay : new long[]{1200, 2800}) {
+            h.postDelayed(() -> {
+                for (String p : list) {
+                    try { am.killBackgroundProcesses(p); } catch (Exception ignored) { }
+                }
+            }, delay);
+        }
+        h.postDelayed(() -> {
+            Set<String> s = openApps(c);
+            s.removeAll(list);
+            prefs(c).edit().putStringSet(KEY_OPEN, s).apply();
+        }, 3000);
+    }
 
     /**
      * فتح التطبيق في نافذة جديدة مستقلة (Freeform) قابلة للإغلاق، أو بملء الشاشة إن طُلب ذلك.

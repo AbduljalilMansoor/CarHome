@@ -9,7 +9,9 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.PixelFormat;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -29,6 +31,7 @@ public class OverlayService extends Service {
     private WindowManager wm;
     private SharedPreferences prefs;
     private View bubble, edgeL, edgeR;
+    private final Handler handler = new Handler(Looper.getMainLooper());
 
     /** يشغّل الخدمة أو يوقفها حسب الإعدادات والصلاحية. */
     static void sync(Context c) {
@@ -110,17 +113,21 @@ public class OverlayService extends Service {
         t.setOnTouchListener(new View.OnTouchListener() {
             float downX, downY;
             int startX, startY;
-            boolean moved;
+            boolean moved, longFired;
+            final Runnable longPress = () -> {
+                if (!moved) { longFired = true; WindowLauncher.closeAll(OverlayService.this); }
+            };
 
             @Override public boolean onTouch(View v, MotionEvent e) {
                 switch (e.getAction()) {
                     case MotionEvent.ACTION_DOWN:
                         downX = e.getRawX(); downY = e.getRawY();
-                        startX = lp.x; startY = lp.y; moved = false;
+                        startX = lp.x; startY = lp.y; moved = false; longFired = false;
+                        handler.postDelayed(longPress, 800);   // ضغط مطوّل = إغلاق كل النوافذ المفتوحة
                         return true;
                     case MotionEvent.ACTION_MOVE: {
                         float mx = e.getRawX() - downX, my = e.getRawY() - downY;
-                        if (Math.abs(mx) > dp(8) || Math.abs(my) > dp(8)) moved = true;
+                        if (Math.abs(mx) > dp(8) || Math.abs(my) > dp(8)) { moved = true; handler.removeCallbacks(longPress); }
                         if (moved) {
                             lp.x = (int) (startX + mx);
                             lp.y = (int) (startY + my);
@@ -129,8 +136,9 @@ public class OverlayService extends Service {
                         return true;
                     }
                     case MotionEvent.ACTION_UP:
+                        handler.removeCallbacks(longPress);
                         if (moved) prefs.edit().putInt("bx", lp.x).putInt("by", lp.y).apply();
-                        else openHome();
+                        else if (!longFired) openHome();
                         return true;
                     default:
                         return false;

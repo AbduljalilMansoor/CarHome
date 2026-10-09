@@ -46,7 +46,7 @@ public class MainActivity extends Activity {
     static final String KEY_PINNED = "pinned", KEY_DISPLAY = "display";
     static final String KEY_BUBBLE = "bubble", KEY_EDGE = "edge";
     static final String KEY_Z0 = "z0", KEY_Z1 = "z1", KEY_ZD0 = "zd0", KEY_ZD1 = "zd1";
-    static final String KEY_MT = "mt", KEY_MB = "mb";
+    static final String KEY_MT = "mt", KEY_MB = "mb", KEY_WINDOW = "window";
     static final String NEW_TRIP_PKG = "com.newtrip.app";
     static final int FAV_SLOTS = 5;
     private static final int[] MARGIN_STEPS = {0, 30, 60, 90, 120, 160};
@@ -187,6 +187,7 @@ public class MainActivity extends Activity {
     // ======================= الحالة المحفوظة =======================
     private void loadState() {
         selectedDisplay = prefs.getInt(KEY_DISPLAY, WindowLauncher.FRONT);
+        if (selectedDisplay != WindowLauncher.FRONT && selectedDisplay != WindowLauncher.REAR) selectedDisplay = WindowLauncher.FRONT;
         zoneContent[0] = cleanZone(prefs.getString(KEY_Z0, ""));
         zoneContent[1] = cleanZone(prefs.getString(KEY_Z1, ""));
         zoneDisplay[0] = prefs.getInt(KEY_ZD0, 0);
@@ -272,7 +273,6 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(-1, 0, 1f);
         blp.topMargin = dp(8);
         card.addView(zoneBody[z], blp);
-        card.setOnClickListener(v -> setActive(z));
         return card;
     }
 
@@ -290,7 +290,7 @@ public class MainActivity extends Activity {
     private void highlightZones() {
         for (int i = 0; i < 2; i++) {
             GradientDrawable g = Ui.round(Ui.CARD, dp(16));
-            g.setStroke(dp(3), i == activeZone ? Ui.EV : Ui.CARD);
+            g.setStroke(dp(3), Ui.CARD);
             zoneCard[i].setBackground(g);
         }
     }
@@ -338,7 +338,7 @@ public class MainActivity extends Activity {
             t.setGravity(Gravity.CENTER);
             t.setPadding(0, dp(8), 0, 0);
             col.addView(t);
-            col.setOnClickListener(v -> { setActive(z); launchZone(z); });
+            col.setOnClickListener(v -> launchZone(z));
         }
         zoneBody[z].addView(col, new FrameLayout.LayoutParams(-1, -1));
     }
@@ -468,7 +468,7 @@ public class MainActivity extends Activity {
             if (a == null) {
                 cell.setOnClickListener(v -> startPick(PICK_FAV, slot));
             } else {
-                cell.setOnClickListener(v -> assign(activeZone, a));
+                cell.setOnClickListener(v -> openWindow(a));
                 cell.setOnLongClickListener(v -> { favMenu(slot, a); return true; });
             }
             dockRow.addView(cell, dockLp());
@@ -573,7 +573,7 @@ public class MainActivity extends Activity {
             appsHint.setText("اضغط على التطبيق لإضافته");
         } else {
             appsTitle.setText("كل التطبيقات");
-            appsHint.setText("اضغط ليعمل في الجانب المحدد (الإطار الأزرق) · مطوّلاً للخيارات");
+            appsHint.setText("اضغط لفتحه في نافذة جديدة · مطوّلاً للخيارات");
         }
         appsPage.setVisibility(View.VISIBLE);
     }
@@ -595,8 +595,14 @@ public class MainActivity extends Activity {
             f[idx] = a.pkg;
             setFavs(f);
         } else {
-            assign(activeZone, a);
+            openWindow(a);
         }
+    }
+
+    /** فتح التطبيق في نافذة جديدة قابلة للإغلاق (أو بملء الشاشة حسب الإعدادات). */
+    private void openWindow(AppItem a) {
+        String err = WindowLauncher.launchWindow(this, a, selectedDisplay, prefs.getBoolean(KEY_WINDOW, true));
+        if (err != null) toast("تعذر التشغيل: " + err);
     }
 
     private void loadApps() {
@@ -698,7 +704,9 @@ public class MainActivity extends Activity {
     // ======================= الإعدادات =======================
     private void showSettings() {
         final boolean bubble = prefs.getBoolean(KEY_BUBBLE, true), edge = prefs.getBoolean(KEY_EDGE, false);
+        final boolean windowed = prefs.getBoolean(KEY_WINDOW, true);
         String[] items = {
+                (windowed ? "☑" : "☐") + "  فتح التطبيقات في نافذة جديدة (وإلا بملء الشاشة)",
                 (bubble ? "☑" : "☐") + "  الأيقونة العائمة للوصول من أي شاشة",
                 (edge ? "☑" : "☐") + "  السحب من حافتي الشاشة لفتح Car Home",
                 "الهامش السفلي: " + prefs.getInt(KEY_MB, 0) + " dp   (إن غطّى شريط السيارة الأزرار السفلية)",
@@ -707,8 +715,11 @@ public class MainActivity extends Activity {
                 pendingUpdate != null ? "⬆  تحديث متوفر — اضغط للتحديث" : "⟳  البحث عن تحديث"
         };
         new AlertDialog.Builder(this).setTitle("إعدادات Car Home").setItems(items, (d, which) -> {
-            if (which == 0 || which == 1) {
-                prefs.edit().putBoolean(which == 0 ? KEY_BUBBLE : KEY_EDGE, which == 0 ? !bubble : !edge).apply();
+            if (which == 0) {
+                prefs.edit().putBoolean(KEY_WINDOW, !windowed).apply();
+                showSettings();
+            } else if (which == 1 || which == 2) {
+                prefs.edit().putBoolean(which == 1 ? KEY_BUBBLE : KEY_EDGE, which == 1 ? !bubble : !edge).apply();
                 if (!Settings.canDrawOverlays(this)) {
                     message("لا توجد صلاحية الظهور فوق التطبيقات.\nثبّت التطبيق من صفحة التثبيت بالكمبيوتر (تمنحها تلقائياً)، أو نفّذ:\n"
                             + "appops set " + getPackageName() + " SYSTEM_ALERT_WINDOW allow");
@@ -716,11 +727,11 @@ public class MainActivity extends Activity {
                     OverlayService.sync(this);
                 }
                 showSettings();
-            } else if (which == 2) {
-                pickMargin(KEY_MB, "الهامش السفلي");
             } else if (which == 3) {
-                pickMargin(KEY_MT, "الهامش العلوي");
+                pickMargin(KEY_MB, "الهامش السفلي");
             } else if (which == 4) {
+                pickMargin(KEY_MT, "الهامش العلوي");
+            } else if (which == 5) {
                 message(WindowLauncher.capabilityReport(this) + layoutReport());
             } else {
                 onUpdateClicked();

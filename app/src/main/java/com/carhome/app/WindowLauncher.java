@@ -49,21 +49,42 @@ final class WindowLauncher {
         }
     }
 
+    private static int cascade = 0;
+
+    /**
+     * فتح التطبيق في نافذة جديدة مستقلة (Freeform) قابلة للإغلاق، أو بملء الشاشة إن طُلب ذلك.
+     * زر الإغلاق/شريط العنوان تعرضه واجهة نظام السيارة للنوافذ الحرة.
+     */
+    static String launchWindow(Activity act, AppItem a, int displayId, boolean windowed) {
+        return launch(act, a, displayId, windowed ? windowBounds(act, displayId) : null);
+    }
+
+    /** نافذة في وسط الشاشة بحجم 72% مع إزاحة بسيطة لكل نافذة جديدة حتى لا تتطابق النوافذ. */
+    private static Rect windowBounds(Context c, int displayId) {
+        DisplayManager dm = (DisplayManager) c.getSystemService(Context.DISPLAY_SERVICE);
+        Display d = dm == null ? null : dm.getDisplay(displayId);
+        if (d == null) return null;
+        android.graphics.Point p = new android.graphics.Point();
+        d.getRealSize(p);
+        int w = Math.round(p.x * 0.72f), h = Math.round(p.y * 0.72f);
+        int step = Math.round(28 * c.getResources().getDisplayMetrics().density);
+        int off = (cascade++ % 5) * step;
+        int left = Math.min((p.x - w) / 2 + off, p.x - w);
+        int top = Math.min((p.y - h) / 2 + off, p.y - h);
+        return new Rect(left, top, left + w, top + h);
+    }
+
     static String displayLabel(int id, String name) {
         if (id == FRONT) return "Display 0 (Front)";
         if (id == REAR) return "Display 5 (Rear)";
         return "Display " + id + (name == null ? "" : " (" + name + ")");
     }
 
-    /** الشاشات المتاحة؛ مع إدراج 0 و 5 دائماً حتى لو لم يُظهرهما النظام للتطبيق. */
+    /** الشاشتان المعروضتان للاختيار: الأمامية (0) والخلفية (5) فقط. */
     static List<int[]> displays(Context c) {
-        TreeSet<Integer> ids = new TreeSet<>();
-        ids.add(FRONT);
-        ids.add(REAR);
-        DisplayManager dm = (DisplayManager) c.getSystemService(Context.DISPLAY_SERVICE);
-        if (dm != null) for (Display d : dm.getDisplays()) ids.add(d.getDisplayId());
         List<int[]> out = new ArrayList<>();
-        for (int id : ids) out.add(new int[]{id});
+        out.add(new int[]{FRONT});
+        out.add(new int[]{REAR});
         return out;
     }
 
@@ -90,6 +111,7 @@ final class WindowLauncher {
                         .append("  ").append(p.x).append('×').append(p.y).append('\n');
             }
         }
+        sb.append("\nملاحظة: زر إغلاق النافذة وشريط عنوانها تعرضهما واجهة النظام للنوافذ الحرة؛ إن لم يظهرا فاستخدم زر الرجوع.\n");
         if (!ff || ffSetting == 0 || resizable == 0) {
             sb.append("\nلتفعيل تشغيل تطبيقين معاً نفّذ بـ ADB ثم أعد تشغيل السيارة:\n")
                     .append("settings put global enable_freeform_support 1\n")

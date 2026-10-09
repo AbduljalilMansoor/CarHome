@@ -11,6 +11,9 @@
     GRANTS.push({ label: 'صلاحية السيارة ' + p, cmd: 'pm grant ' + PKG + ' android.car.permission.' + p, optional: true });
   });
   GRANTS.push({ label: 'تثبيت التطبيقات (لزر «تحديث»)', cmd: 'appops set ' + PKG + ' REQUEST_INSTALL_PACKAGES allow' });
+  GRANTS.push({ label: 'الأيقونة العائمة والسحب من الحافة (الظهور فوق التطبيقات)', cmd: 'appops set ' + PKG + ' SYSTEM_ALERT_WINDOW allow' });
+  GRANTS.push({ label: 'تشغيل تطبيقين معاً: السماح بالنوافذ الحرة', cmd: 'settings put global enable_freeform_support 1', optional: true });
+  GRANTS.push({ label: 'تشغيل تطبيقين معاً: جعل التطبيقات قابلة لتغيير الحجم', cmd: 'settings put global force_resizable_activities 1', optional: true });
   GRANTS.push({ label: 'الإشعارات', cmd: 'pm grant ' + PKG + ' android.permission.POST_NOTIFICATIONS', optional: true });
   GRANTS.push({ label: 'استثناء من توفير الطاقة', cmd: 'dumpsys deviceidle whitelist +' + PKG, optional: true });
 

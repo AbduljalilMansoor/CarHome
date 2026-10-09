@@ -9,7 +9,8 @@ import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
-import android.graphics.drawable.Drawable;
+import android.graphics.Rect;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -17,11 +18,13 @@ import android.os.HandlerThread;
 import android.os.Looper;
 import android.provider.Settings;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.widget.FrameLayout;
 import android.widget.GridLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.PopupMenu;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -34,21 +37,20 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Car Home: شاشة رئيسية (Launcher) لسيارة جيتور.
- * - لوحة حية: سرعة، نمط القيادة، الغِيار، بطارية، وقود، مدى، قدرة، دورات، عدّاد.
- * - شريط تطبيقات مفضّلة (ضغط مطوّل على أي تطبيق في القائمة لتثبيته).
- * - قائمة بكل التطبيقات المثبتة.
- * البيانات تأتي من CarBridge (نفس كود TripLog الذي يقرأ Autolink).
+ * Car Home — الشاشة الرئيسية:
+ *  1) منطقتان (يمين/يسار) لتشغيل تطبيقين معاً، أو عرض لوحة السيارة المدمجة.
+ *  2) زر «تعديل» لتغيير حجم المنطقتين بسحب الفاصل.
+ *  3) شريط سفلي: اختيار الشاشة (Display) + التطبيقات المفضلة (حتى 5) + زر «التطبيقات» + الودجات + الإعدادات.
+ *  4) يمكن فتحه من أي شاشة بالأيقونة العائمة أو السحب من الحافة (OverlayService).
  */
 public class MainActivity extends Activity {
     static final String PREFS = "carhome";
-    static final String KEY_PINNED = "pinned";
+    static final String KEY_PINNED = "pinned", KEY_DISPLAY = "display", KEY_SPLIT = "split";
+    static final String KEY_BUBBLE = "bubble", KEY_EDGE = "edge";
+    static final String KEY_Z0 = "z0", KEY_Z1 = "z1", KEY_ZD0 = "zd0", KEY_ZD1 = "zd1";
     static final String NEW_TRIP_PKG = "com.newtrip.app";
-
-    private static final class AppItem {
-        String pkg, cls, label;
-        Drawable icon;
-    }
+    static final String DASH = "dash";
+    static final int MAX_PINNED = 5;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
@@ -59,35 +61,46 @@ public class MainActivity extends Activity {
     private Handler pollHandler;
     private volatile boolean polling;
 
+    // الحالة
+    private final String[] zoneContent = {DASH, ""};
+    private final int[] zoneDisplay = {0, 0};
+    private int activeZone = 1;
+    private float split = 0.5f;
+    private int selectedDisplay = WindowLauncher.FRONT;
+    private boolean editMode;
+    private long lastApply;
+
     // واجهة
-    private FrameLayout rootFrame;
-    private LinearLayout dockApps;
-    private FrameLayout appsPage;
+    private FrameLayout rootFrame, appsPage;
+    private LinearLayout zonesRow, dockRow;
+    private final LinearLayout[] zoneCard = new LinearLayout[2];
+    private final FrameLayout[] zoneBody = new FrameLayout[2];
+    private final TextView[] zoneTitle = new TextView[2];
+    private final ImageView[] zoneIcon = new ImageView[2];
+    private final Dashboard[] zoneDash = new Dashboard[2];
+    private TextView editBtn, displayBtn, vClock;
+    private LinearLayout divider;
     private GridLayout grid;
-    private TextView vSpeed, vMode, vGear, vSource, vClock, vDate;
-    private TextView vPower, vRpm, vOdo, vEvRange, vRange, updateBtn;
-    private RingGauge gBattery, gFuel;
 
     private List<AppItem> apps = new ArrayList<>();
     private boolean appsDirty = true;
     private Updater.Info pendingUpdate;
 
     private final SimpleDateFormat timeFmt = new SimpleDateFormat("HH:mm", Locale.getDefault());
-    private final SimpleDateFormat dateFmt = new SimpleDateFormat("EEEE d MMMM", Locale.getDefault());
 
     private final Runnable tick = new Runnable() {
         @Override public void run() {
-            render();
+            vClock.setText(timeFmt.format(new Date()));
+            for (Dashboard d : zoneDash) if (d != null) d.render(car.live);
             ui.postDelayed(this, 1000);
         }
     };
 
     private final BroadcastReceiver pkgReceiver = new BroadcastReceiver() {
-        @Override public void onReceive(Context c, Intent i) {
-            appsDirty = true;
-            loadApps();
-        }
+        @Override public void onReceive(Context c, Intent i) { appsDirty = true; loadApps(); }
     };
+
+    private int dp(float v) { return Ui.dp(this, v); }
 
     // ======================= دورة الحياة =======================
     @Override
@@ -96,23 +109,20 @@ public class MainActivity extends Activity {
         Updater.init(this);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         if (!prefs.contains(KEY_PINNED)) prefs.edit().putString(KEY_PINNED, NEW_TRIP_PKG).apply();
-
+        loadState();
         car = new CarBridge();
 
         rootFrame = new FrameLayout(this);
         rootFrame.setBackgroundColor(Ui.BG);
         rootFrame.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
 
-        int p = Ui.dp(this, 16);
-        LinearLayout home = new LinearLayout(this);
-        home.setOrientation(LinearLayout.HORIZONTAL);
-        home.setPadding(p, p, p, p);
-        home.addView(buildDock(), new LinearLayout.LayoutParams(Ui.dp(this, 112), -1));
-        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(0, -1, 1f);
-        clp.setMargins(p, 0, p, 0);
-        home.addView(buildCenter(), clp);
-        home.addView(buildSide(), new LinearLayout.LayoutParams(Ui.dp(this, 280), -1));
-        rootFrame.addView(home, new FrameLayout.LayoutParams(-1, -1));
+        LinearLayout main = new LinearLayout(this);
+        main.setOrientation(LinearLayout.VERTICAL);
+        main.setPadding(dp(12), dp(8), dp(12), dp(10));
+        main.addView(buildTopBar(), new LinearLayout.LayoutParams(-1, -2));
+        main.addView(buildZones(), new LinearLayout.LayoutParams(-1, 0, 1f));
+        main.addView(buildBottomBar(), new LinearLayout.LayoutParams(-1, -2));
+        rootFrame.addView(main, new FrameLayout.LayoutParams(-1, -1));
 
         appsPage = buildAppsPage();
         appsPage.setVisibility(View.GONE);
@@ -126,8 +136,11 @@ public class MainActivity extends Activity {
         f.addDataScheme("package");
         registerReceiver(pkgReceiver, f);
 
+        renderZones();
+        updateDisplayButton();
         loadApps();
         checkUpdateQuietly();
+        try { OverlayService.sync(this); } catch (Exception ignored) { }
     }
 
     @Override
@@ -154,18 +167,35 @@ public class MainActivity extends Activity {
         car.release();
     }
 
-    /** زر Home أثناء وجودنا في الواجهة: ارجع للشاشة الرئيسية وأغلق قائمة التطبيقات. */
+    /** زر Home أو الأيقونة العائمة: أغلق القوائم وأعد إظهار التطبيقات داخل المنطقتين. */
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         hideApps();
+        applyZones();
     }
 
     @Override
     public void onBackPressed() {
         if (appsPage.getVisibility() == View.VISIBLE) hideApps();
-        // وإلا: لا شيء، فنحن الشاشة الرئيسية
     }
+
+    // ======================= الحالة المحفوظة =======================
+    private void loadState() {
+        split = clamp(prefs.getFloat(KEY_SPLIT, 0.5f));
+        selectedDisplay = prefs.getInt(KEY_DISPLAY, WindowLauncher.FRONT);
+        zoneContent[0] = prefs.getString(KEY_Z0, DASH);
+        zoneContent[1] = prefs.getString(KEY_Z1, "");
+        zoneDisplay[0] = prefs.getInt(KEY_ZD0, 0);
+        zoneDisplay[1] = prefs.getInt(KEY_ZD1, 0);
+    }
+
+    private void saveZones() {
+        prefs.edit().putString(KEY_Z0, zoneContent[0]).putString(KEY_Z1, zoneContent[1])
+                .putInt(KEY_ZD0, zoneDisplay[0]).putInt(KEY_ZD1, zoneDisplay[1]).apply();
+    }
+
+    private static float clamp(float v) { return Math.max(0.25f, Math.min(0.75f, v)); }
 
     // ======================= قراءة السيارة =======================
     private void startPolling() {
@@ -179,7 +209,7 @@ public class MainActivity extends Activity {
             @Override public void run() {
                 if (!polling) return;
                 try {
-                    car.connect(app);   // يعيد المحاولة وحده كل 10 ثوانٍ حتى يتصل
+                    car.connect(app);
                     car.poll();
                 } catch (Throwable ignored) { }
                 if (polling) pollHandler.postDelayed(this, 1000);
@@ -192,175 +222,362 @@ public class MainActivity extends Activity {
         if (pollThread != null) { pollThread.quitSafely(); pollThread = null; }
     }
 
-    // ======================= بناء الواجهة =======================
-    private View buildDock() {
-        LinearLayout dock = Ui.card(this);
-        dock.setGravity(Gravity.CENTER_HORIZONTAL);
-        int pad = Ui.dp(this, 10);
-        dock.setPadding(pad, pad, pad, pad);
-
-        ScrollView sv = new ScrollView(this);
-        sv.setVerticalScrollBarEnabled(false);
-        dockApps = new LinearLayout(this);
-        dockApps.setOrientation(LinearLayout.VERTICAL);
-        dockApps.setGravity(Gravity.CENTER_HORIZONTAL);
-        sv.addView(dockApps, new FrameLayout.LayoutParams(-1, -2));
-        dock.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1f));
-
-        TextView all = Ui.text(this, "⊞", 38, Ui.TEXT, true);
-        all.setGravity(Gravity.CENTER);
-        all.setBackground(Ui.round(Ui.CARD2, Ui.dp(this, 16)));
-        all.setOnClickListener(v -> showApps());
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(Ui.dp(this, 84), Ui.dp(this, 84));
-        lp.topMargin = pad;
-        dock.addView(all, lp);
-        return dock;
+    // ======================= الشريط العلوي =======================
+    private View buildTopBar() {
+        LinearLayout bar = Ui.row(this);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.addView(Ui.text(this, "⌂  Car Home", 18, Ui.MUTED, true), new LinearLayout.LayoutParams(0, -2, 1f));
+        vClock = Ui.text(this, "--:--", 22, Ui.TEXT, true);
+        bar.addView(vClock);
+        return bar;
     }
 
-    private View buildCenter() {
-        LinearLayout c = new LinearLayout(this);
-        c.setOrientation(LinearLayout.VERTICAL);
-        int m = Ui.dp(this, 6);
-
-        // --- السرعة + النمط + الغِيار
-        LinearLayout sp = Ui.card(this);
-        sp.setOrientation(LinearLayout.HORIZONTAL);
-        sp.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout sCol = new LinearLayout(this);
-        sCol.setOrientation(LinearLayout.VERTICAL);
-        vSpeed = Ui.text(this, "—", 92, Ui.TEXT, true);
-        sCol.addView(vSpeed);
-        sCol.addView(Ui.text(this, "km/h", 18, Ui.MUTED, false));
-        sp.addView(sCol, new LinearLayout.LayoutParams(0, -2, 1f));
-
-        LinearLayout rCol = new LinearLayout(this);
-        rCol.setOrientation(LinearLayout.VERTICAL);
-        rCol.setGravity(Gravity.CENTER_HORIZONTAL);
-        vMode = Ui.text(this, "—", 22, 0xFFFFFFFF, true);
-        vMode.setGravity(Gravity.CENTER);
-        int hp = Ui.dp(this, 18), vp = Ui.dp(this, 8);
-        vMode.setPadding(hp, vp, hp, vp);
-        rCol.addView(vMode);
-        vGear = Ui.text(this, "—", 54, Ui.TEXT, true);
-        vGear.setGravity(Gravity.CENTER);
-        rCol.addView(vGear);
-        vSource = Ui.text(this, "", 14, Ui.MUTED, false);
-        vSource.setGravity(Gravity.CENTER);
-        rCol.addView(vSource);
-        sp.addView(rCol, new LinearLayout.LayoutParams(Ui.dp(this, 220), -2));
-        LinearLayout.LayoutParams splp = new LinearLayout.LayoutParams(-1, -2);
-        splp.setMargins(m, m, m, m);
-        c.addView(sp, splp);
-
-        // --- العدادات الدائرية
-        LinearLayout gcard = Ui.card(this);
-        gcard.setOrientation(LinearLayout.HORIZONTAL);
-        gcard.setGravity(Gravity.CENTER);
-        gBattery = new RingGauge(this, "البطارية", Ui.EV);
-        gBattery.setLowWarning(15);
-        gFuel = new RingGauge(this, "الوقود", Ui.ENG);
-        gFuel.setLowWarning(12);
-        vEvRange = Ui.text(this, "—", 18, Ui.MUTED, false);
-        vRange = Ui.text(this, "—", 18, Ui.MUTED, false);
-        gcard.addView(gaugeColumn(gBattery, vEvRange), new LinearLayout.LayoutParams(0, -2, 1f));
-        gcard.addView(gaugeColumn(gFuel, vRange), new LinearLayout.LayoutParams(0, -2, 1f));
-        LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(-1, 0, 1f);
-        glp.setMargins(m, m, m, m);
-        c.addView(gcard, glp);
-
-        // --- بطاقات صغيرة
-        LinearLayout tiles = Ui.row(this);
-        vPower = Ui.tile(tiles, "القدرة (kW)", Ui.EV);
-        vRpm = Ui.tile(tiles, "الدورات (rpm)", Ui.ENG);
-        vOdo = Ui.tile(tiles, "العدّاد", Ui.TEXT);
-        c.addView(tiles, new LinearLayout.LayoutParams(-1, -2));
-        return c;
+    // ======================= المنطقتان =======================
+    private View buildZones() {
+        zonesRow = new LinearLayout(this);
+        zonesRow.setOrientation(LinearLayout.HORIZONTAL);
+        zonesRow.setBaselineAligned(false);
+        zoneCard[0] = buildZone(0);
+        zoneCard[1] = buildZone(1);
+        divider = buildDivider();
+        zonesRow.addView(zoneCard[0], zoneLp(split));
+        zonesRow.addView(divider, new LinearLayout.LayoutParams(dp(76), -1));
+        zonesRow.addView(zoneCard[1], zoneLp(1f - split));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, 0, 1f);
+        zonesRow.setLayoutParams(lp);
+        return zonesRow;
     }
 
-    private View gaugeColumn(RingGauge g, TextView under) {
-        LinearLayout col = new LinearLayout(this);
-        col.setOrientation(LinearLayout.VERTICAL);
-        col.setGravity(Gravity.CENTER_HORIZONTAL);
-        int s = Ui.dp(this, 200);
-        col.addView(g, new LinearLayout.LayoutParams(s, s));
-        under.setGravity(Gravity.CENTER);
-        col.addView(under);
-        return col;
-    }
-
-    private View buildSide() {
-        LinearLayout s = new LinearLayout(this);
-        s.setOrientation(LinearLayout.VERTICAL);
-
-        LinearLayout clock = Ui.card(this);
-        clock.setGravity(Gravity.CENTER_HORIZONTAL);
-        vClock = Ui.text(this, "--:--", 68, Ui.TEXT, true);
-        vDate = Ui.text(this, "", 18, Ui.MUTED, false);
-        clock.addView(vClock);
-        clock.addView(vDate);
-        s.addView(clock, new LinearLayout.LayoutParams(-1, -2));
-
-        int gap = Ui.dp(this, 12);
-        s.addView(sideButton("🧭  New Trip", 0xFF1E88E5, v -> launchPackage(NEW_TRIP_PKG)), sideLp(gap));
-        s.addView(sideButton("⚙  الإعدادات", 0xFF455A64,
-                v -> startSafely(new Intent(Settings.ACTION_SETTINGS))), sideLp(gap));
-        updateBtn = sideButton("⟳  تحديث", 0xFF37474F, v -> onUpdateClicked());
-        s.addView(updateBtn, sideLp(gap));
-        return s;
-    }
-
-    private TextView sideButton(String label, int color, View.OnClickListener l) {
-        TextView b = Ui.button(this, label, color, l);
-        b.setPadding(Ui.dp(this, 16), Ui.dp(this, 20), Ui.dp(this, 16), Ui.dp(this, 20));
-        return b;
-    }
-
-    private LinearLayout.LayoutParams sideLp(int gap) {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
-        lp.topMargin = gap;
+    private LinearLayout.LayoutParams zoneLp(float w) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -1, w);
+        lp.setMargins(dp(4), 0, dp(4), 0);
         return lp;
     }
 
+    private LinearLayout buildZone(final int z) {
+        LinearLayout card = Ui.card(this);
+        card.setPadding(dp(10), dp(10), dp(10), dp(10));
+        LinearLayout head = Ui.row(this);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        zoneIcon[z] = new ImageView(this);
+        head.addView(zoneIcon[z], new LinearLayout.LayoutParams(dp(30), dp(30)));
+        zoneTitle[z] = Ui.text(this, "", 18, Ui.TEXT, true);
+        zoneTitle[z].setPadding(dp(8), 0, 0, 0);
+        zoneTitle[z].setSingleLine(true);
+        head.addView(zoneTitle[z], new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView x = Ui.text(this, "✕", 22, Ui.MUTED, true);
+        x.setPadding(dp(14), dp(2), dp(6), dp(2));
+        x.setOnClickListener(v -> { zoneContent[z] = ""; saveZones(); renderZone(z); });
+        head.addView(x);
+        card.addView(head, new LinearLayout.LayoutParams(-1, -2));
+
+        zoneBody[z] = new FrameLayout(this);
+        zoneBody[z].setBackground(Ui.round(Ui.BG, dp(12)));
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(-1, 0, 1f);
+        blp.topMargin = dp(8);
+        card.addView(zoneBody[z], blp);
+        card.setOnClickListener(v -> setActive(z));
+        return card;
+    }
+
+    private LinearLayout buildDivider() {
+        LinearLayout d = new LinearLayout(this);
+        d.setOrientation(LinearLayout.VERTICAL);
+        d.setGravity(Gravity.CENTER);
+        d.setBackground(Ui.round(Ui.CARD, dp(16)));
+
+        View.OnTouchListener drag = (v, e) -> {
+            if (!editMode) return false;
+            int[] loc = new int[2];
+            zonesRow.getLocationOnScreen(loc);
+            if (e.getAction() == MotionEvent.ACTION_DOWN) return true;
+            if (e.getAction() == MotionEvent.ACTION_MOVE || e.getAction() == MotionEvent.ACTION_UP) {
+                split = clamp((e.getRawX() - loc[0]) / Math.max(1, zonesRow.getWidth()));
+                zoneCard[0].setLayoutParams(zoneLp(split));
+                zoneCard[1].setLayoutParams(zoneLp(1f - split));
+                if (e.getAction() == MotionEvent.ACTION_UP) {
+                    prefs.edit().putFloat(KEY_SPLIT, split).apply();
+                    ui.postDelayed(() -> { launchZone(0); launchZone(1); }, 250);   // بعد استقرار التخطيط
+                }
+                return true;
+            }
+            return true;
+        };
+
+        TextView up = Ui.text(this, "◀ ▶", 20, Ui.MUTED, true);
+        up.setGravity(Gravity.CENTER);
+        up.setOnTouchListener(drag);
+        d.addView(up, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+        editBtn = Ui.text(this, "✎\nتعديل", 15, Ui.TEXT, true);
+        editBtn.setGravity(Gravity.CENTER);
+        editBtn.setBackground(Ui.round(Ui.CARD2, dp(14)));
+        editBtn.setPadding(dp(6), dp(14), dp(6), dp(14));
+        editBtn.setOnClickListener(v -> toggleEdit());
+        LinearLayout.LayoutParams elp = new LinearLayout.LayoutParams(-1, -2);
+        elp.setMargins(dp(6), dp(6), dp(6), dp(6));
+        d.addView(editBtn, elp);
+
+        TextView down = Ui.text(this, "◀ ▶", 20, Ui.MUTED, true);
+        down.setGravity(Gravity.CENTER);
+        down.setOnTouchListener(drag);
+        d.addView(down, new LinearLayout.LayoutParams(-1, 0, 1f));
+        return d;
+    }
+
+    private void toggleEdit() {
+        editMode = !editMode;
+        editBtn.setText(editMode ? "✓\nتم" : "✎\nتعديل");
+        editBtn.setBackground(Ui.round(editMode ? Ui.EV : Ui.CARD2, dp(14)));
+        divider.setBackground(Ui.round(editMode ? 0xFF1B3A52 : Ui.CARD, dp(16)));
+        if (editMode) toast("اسحب السهمين ◀ ▶ لتغيير حجم المنطقتين");
+    }
+
+    private void setActive(int z) {
+        activeZone = z;
+        highlightZones();
+    }
+
+    private void highlightZones() {
+        for (int i = 0; i < 2; i++) {
+            GradientDrawable g = Ui.round(Ui.CARD, dp(16));
+            g.setStroke(dp(3), i == activeZone ? Ui.EV : Ui.CARD);
+            zoneCard[i].setBackground(g);
+        }
+    }
+
+    private void renderZones() { renderZone(0); renderZone(1); }
+
+    private void renderZone(final int z) {
+        zoneBody[z].removeAllViews();
+        zoneDash[z] = null;
+        zoneIcon[z].setImageDrawable(null);
+        String c = zoneContent[z];
+        highlightZones();
+        if (c.isEmpty()) {
+            zoneTitle[z].setText("المنطقة " + (z + 1));
+            LinearLayout col = centerColumn();
+            col.addView(Ui.text(this, "＋", 54, Ui.MUTED, true));
+            col.addView(Ui.text(this, "اختر تطبيقاً", 18, Ui.MUTED, false));
+            col.setOnClickListener(v -> { setActive(z); showApps(); });
+            zoneBody[z].addView(col, new FrameLayout.LayoutParams(-1, -1));
+        } else if (c.equals(DASH)) {
+            zoneTitle[z].setText("لوحة السيارة");
+            Dashboard d = new Dashboard(this);
+            zoneDash[z] = d;
+            d.render(car.live);
+            zoneBody[z].addView(d.view, new FrameLayout.LayoutParams(-1, -1));
+        } else {
+            AppItem a = find(c);
+            zoneTitle[z].setText(a == null ? c : a.label);
+            LinearLayout col = centerColumn();
+            if (a != null) {
+                zoneIcon[z].setImageDrawable(a.icon);
+                ImageView big = new ImageView(this);
+                big.setImageDrawable(a.icon);
+                col.addView(big, new LinearLayout.LayoutParams(dp(96), dp(96)));
+            }
+            boolean other = zoneDisplay[z] != WindowLauncher.FRONT;
+            TextView t = Ui.text(this, other
+                    ? "يعمل على " + WindowLauncher.displayLabel(zoneDisplay[z], null)
+                    : "التطبيق يعمل في هذه المنطقة\nاضغط لإعادة التشغيل", 16, Ui.MUTED, false);
+            t.setGravity(Gravity.CENTER);
+            t.setPadding(0, dp(8), 0, 0);
+            col.addView(t);
+            col.setOnClickListener(v -> { setActive(z); launchZone(z); });
+            zoneBody[z].addView(col, new FrameLayout.LayoutParams(-1, -1));
+        }
+    }
+
+    private LinearLayout centerColumn() {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setGravity(Gravity.CENTER);
+        return col;
+    }
+
+    /** تعيين تطبيق للمنطقة وتشغيله على الشاشة المختارة. */
+    private void assign(int z, AppItem a) {
+        zoneContent[z] = a.pkg;
+        zoneDisplay[z] = selectedDisplay;
+        saveZones();
+        renderZone(z);
+        launchZone(z);
+    }
+
+    private void launchZone(final int z) {
+        String c = zoneContent[z];
+        if (c.isEmpty() || c.equals(DASH)) return;
+        final AppItem a = find(c);
+        if (a == null) { toast("التطبيق غير مثبّت"); return; }
+        final int d = zoneDisplay[z];
+        zoneBody[z].post(() -> {
+            Rect r = null;
+            if (d == WindowLauncher.FRONT) {
+                int[] loc = new int[2];
+                zoneBody[z].getLocationOnScreen(loc);
+                r = new Rect(loc[0], loc[1], loc[0] + zoneBody[z].getWidth(), loc[1] + zoneBody[z].getHeight());
+            }
+            String err = WindowLauncher.launch(this, a, d, r);
+            if (err != null) toast("تعذر التشغيل: " + err);
+        });
+    }
+
+    /** إعادة إظهار تطبيقات المنطقتين (بعد العودة من تطبيق آخر أو تغيير الحجم). */
+    private void applyZones() {
+        long now = System.currentTimeMillis();
+        if (now - lastApply < 1500) return;
+        lastApply = now;
+        launchZone(0);
+        launchZone(1);
+    }
+
+    // ======================= الشريط السفلي =======================
+    private View buildBottomBar() {
+        LinearLayout bar = Ui.row(this);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setPadding(0, dp(8), 0, 0);
+
+        displayBtn = Ui.text(this, "", 16, Ui.TEXT, true);
+        displayBtn.setBackground(Ui.round(Ui.CARD2, dp(14)));
+        displayBtn.setPadding(dp(16), dp(14), dp(16), dp(14));
+        displayBtn.setOnClickListener(v -> showDisplayMenu(v));
+        bar.addView(displayBtn, new LinearLayout.LayoutParams(-2, -2));
+
+        dockRow = new LinearLayout(this);
+        dockRow.setOrientation(LinearLayout.HORIZONTAL);
+        dockRow.setGravity(Gravity.CENTER);
+        dockRow.setBackground(Ui.round(Ui.CARD, dp(18)));
+        dockRow.setPadding(dp(8), dp(6), dp(8), dp(6));
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(0, -2, 1f);
+        dlp.setMargins(dp(12), 0, dp(12), 0);
+        bar.addView(dockRow, dlp);
+
+        TextView gear = Ui.text(this, "⚙", 24, Ui.TEXT, true);
+        gear.setGravity(Gravity.CENTER);
+        gear.setBackground(Ui.round(Ui.CARD2, dp(14)));
+        gear.setOnClickListener(v -> showSettings());
+        LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(dp(60), dp(60));
+        glp.rightMargin = dp(8);
+        bar.addView(gear, glp);
+
+        TextView widgets = Ui.text(this, "▦  WIDGETS", 15, Ui.TEXT, true);
+        widgets.setGravity(Gravity.CENTER);
+        widgets.setBackground(Ui.round(Ui.CARD2, dp(14)));
+        widgets.setPadding(dp(16), dp(14), dp(16), dp(14));
+        widgets.setOnClickListener(v -> showWidgets());
+        bar.addView(widgets, new LinearLayout.LayoutParams(-2, -2));
+        return bar;
+    }
+
+    private void updateDisplayButton() {
+        displayBtn.setText("▾  Display " + selectedDisplay + (selectedDisplay == WindowLauncher.FRONT ? " (Front)"
+                : selectedDisplay == WindowLauncher.REAR ? " (Rear)" : ""));
+    }
+
+    private void showDisplayMenu(View anchor) {
+        PopupMenu m = new PopupMenu(this, anchor);
+        m.getMenu().add(0, -1, 0, "اختر الشاشة التي يعمل عليها التطبيق").setEnabled(false);
+        for (int[] d : WindowLauncher.displays(this)) {
+            int id = d[0];
+            m.getMenu().add(0, id, id + 1, (id == selectedDisplay ? "✓  " : "     ")
+                    + WindowLauncher.displayLabel(id, null));
+        }
+        m.setOnMenuItemClickListener(item -> {
+            if (item.getItemId() >= 0) {
+                selectedDisplay = item.getItemId();
+                prefs.edit().putInt(KEY_DISPLAY, selectedDisplay).apply();
+                updateDisplayButton();
+            }
+            return true;
+        });
+        m.show();
+    }
+
+    private void renderDock() {
+        dockRow.removeAllViews();
+        int n = 0;
+        for (String pkg : getPinned()) {
+            AppItem a = find(pkg);
+            if (a == null || n >= MAX_PINNED) continue;
+            n++;
+            dockRow.addView(dockCell(a.icon, a.label, v -> assign(activeZone, a), a), dockLp());
+        }
+        TextView allIcon = Ui.text(this, "⊞", 32, Ui.TEXT, true);
+        allIcon.setGravity(Gravity.CENTER);
+        LinearLayout cell = new LinearLayout(this);
+        cell.setOrientation(LinearLayout.VERTICAL);
+        cell.setGravity(Gravity.CENTER_HORIZONTAL);
+        cell.setPadding(dp(10), dp(2), dp(10), dp(2));
+        cell.addView(allIcon, new LinearLayout.LayoutParams(dp(52), dp(52)));
+        TextView lbl = Ui.text(this, "التطبيقات", 12, Ui.MUTED, false);
+        lbl.setGravity(Gravity.CENTER);
+        cell.addView(lbl);
+        cell.setOnClickListener(v -> showApps());
+        dockRow.addView(cell, dockLp());
+    }
+
+    private LinearLayout.LayoutParams dockLp() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+        lp.setMargins(dp(6), 0, dp(6), 0);
+        return lp;
+    }
+
+    private View dockCell(android.graphics.drawable.Drawable icon, String label, View.OnClickListener click, AppItem a) {
+        LinearLayout cell = new LinearLayout(this);
+        cell.setOrientation(LinearLayout.VERTICAL);
+        cell.setGravity(Gravity.CENTER_HORIZONTAL);
+        cell.setPadding(dp(10), dp(2), dp(10), dp(2));
+        ImageView iv = new ImageView(this);
+        iv.setImageDrawable(icon);
+        cell.addView(iv, new LinearLayout.LayoutParams(dp(52), dp(52)));
+        TextView t = Ui.text(this, label, 12, Ui.MUTED, false);
+        t.setGravity(Gravity.CENTER);
+        t.setSingleLine(true);
+        t.setMaxWidth(dp(90));
+        t.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        cell.addView(t);
+        cell.setOnClickListener(click);
+        cell.setOnLongClickListener(v -> { appMenu(a); return true; });
+        return cell;
+    }
+
+    // ======================= كل التطبيقات =======================
     private FrameLayout buildAppsPage() {
         FrameLayout page = new FrameLayout(this);
         page.setBackgroundColor(Ui.BG);
-        page.setClickable(true);   // لا تمرّر اللمس للشاشة تحتها
+        page.setClickable(true);
 
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        int p = Ui.dp(this, 20);
-        col.setPadding(p, p, p, p);
+        col.setPadding(dp(20), dp(20), dp(20), dp(20));
 
         LinearLayout header = Ui.row(this);
         header.setGravity(Gravity.CENTER_VERTICAL);
         header.addView(Ui.text(this, "كل التطبيقات", 28, Ui.TEXT, true));
-        TextView hint = Ui.text(this, "   اضغط مطوّلاً على تطبيق لتثبيته أو حذفه", 15, Ui.MUTED, false);
-        header.addView(hint, new LinearLayout.LayoutParams(0, -2, 1f));
+        header.addView(Ui.text(this, "   اضغط لتشغيله في المنطقة المحددة · مطوّلاً للخيارات", 15, Ui.MUTED, false),
+                new LinearLayout.LayoutParams(0, -2, 1f));
         TextView close = Ui.text(this, "✕", 32, Ui.TEXT, true);
         close.setGravity(Gravity.CENTER);
-        close.setBackground(Ui.round(Ui.CARD2, Ui.dp(this, 14)));
+        close.setBackground(Ui.round(Ui.CARD2, dp(14)));
         close.setOnClickListener(v -> hideApps());
-        header.addView(close, new LinearLayout.LayoutParams(Ui.dp(this, 64), Ui.dp(this, 64)));
+        header.addView(close, new LinearLayout.LayoutParams(dp(64), dp(64)));
         col.addView(header);
 
         ScrollView sv = new ScrollView(this);
         grid = new GridLayout(this);
         sv.addView(grid, new FrameLayout.LayoutParams(-1, -2));
         LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(-1, 0, 1f);
-        slp.topMargin = Ui.dp(this, 12);
+        slp.topMargin = dp(12);
         col.addView(sv, slp);
-
         page.addView(col, new FrameLayout.LayoutParams(-1, -1));
         return page;
     }
 
     private void showApps() { appsPage.setVisibility(View.VISIBLE); }
 
-    private void hideApps() {
-        if (appsPage != null) appsPage.setVisibility(View.GONE);
-    }
+    private void hideApps() { if (appsPage != null) appsPage.setVisibility(View.GONE); }
 
-    // ======================= التطبيقات =======================
     private void loadApps() {
         final PackageManager pm = getPackageManager();
         new Thread(() -> {
@@ -383,54 +600,35 @@ public class MainActivity extends Activity {
                 appsDirty = false;
                 fillGrid();
                 renderDock();
+                renderZones();
             });
         }).start();
     }
 
     private void fillGrid() {
         grid.removeAllViews();
-        int cell = Ui.dp(this, 132);
+        int cell = dp(132);
         int cols = Math.max(4, getResources().getDisplayMetrics().widthPixels / cell - 1);
         grid.setColumnCount(cols);
-        for (AppItem a : apps) grid.addView(appCell(a, cell, 76, 16));
-    }
-
-    private View appCell(AppItem a, int width, int iconDp, int labelSp) {
-        LinearLayout c = new LinearLayout(this);
-        c.setOrientation(LinearLayout.VERTICAL);
-        c.setGravity(Gravity.CENTER_HORIZONTAL);
-        int pad = Ui.dp(this, 8);
-        c.setPadding(pad, pad, pad, pad);
-        ImageView iv = new ImageView(this);
-        iv.setImageDrawable(a.icon);
-        c.addView(iv, new LinearLayout.LayoutParams(Ui.dp(this, iconDp), Ui.dp(this, iconDp)));
-        TextView t = Ui.text(this, a.label, labelSp, Ui.TEXT, false);
-        t.setGravity(Gravity.CENTER);
-        t.setMaxLines(2);
-        t.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        c.addView(t, new LinearLayout.LayoutParams(-1, -2));
-        c.setLayoutParams(new GridLayout.LayoutParams());
-        c.getLayoutParams().width = width;
-        c.setOnClickListener(v -> { hideApps(); launch(a); });
-        c.setOnLongClickListener(v -> { appMenu(a); return true; });
-        return c;
-    }
-
-    private void renderDock() {
-        dockApps.removeAllViews();
-        int size = Ui.dp(this, 76);
-        for (String pkg : getPinned()) {
-            AppItem a = find(pkg);
-            if (a == null) continue;
+        for (final AppItem a : apps) {
+            LinearLayout c = new LinearLayout(this);
+            c.setOrientation(LinearLayout.VERTICAL);
+            c.setGravity(Gravity.CENTER_HORIZONTAL);
+            c.setPadding(dp(8), dp(8), dp(8), dp(8));
             ImageView iv = new ImageView(this);
             iv.setImageDrawable(a.icon);
-            int pad = Ui.dp(this, 8);
-            iv.setPadding(pad, pad, pad, pad);
-            iv.setOnClickListener(v -> launch(a));
-            iv.setOnLongClickListener(v -> { appMenu(a); return true; });
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(size, size);
-            lp.bottomMargin = Ui.dp(this, 8);
-            dockApps.addView(iv, lp);
+            c.addView(iv, new LinearLayout.LayoutParams(dp(76), dp(76)));
+            TextView t = Ui.text(this, a.label, 16, Ui.TEXT, false);
+            t.setGravity(Gravity.CENTER);
+            t.setMaxLines(2);
+            t.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            c.addView(t, new LinearLayout.LayoutParams(-1, -2));
+            GridLayout.LayoutParams glp = new GridLayout.LayoutParams();
+            glp.width = cell;
+            c.setLayoutParams(glp);
+            c.setOnClickListener(v -> { hideApps(); assign(activeZone, a); });
+            c.setOnLongClickListener(v -> { appMenu(a); return true; });
+            grid.addView(c);
         }
     }
 
@@ -441,8 +639,7 @@ public class MainActivity extends Activity {
 
     private List<String> getPinned() {
         List<String> l = new ArrayList<>();
-        String s = prefs.getString(KEY_PINNED, "");
-        for (String x : s.split(",")) if (!x.isEmpty()) l.add(x);
+        for (String x : prefs.getString(KEY_PINNED, "").split(",")) if (!x.isEmpty()) l.add(x);
         return l;
     }
 
@@ -453,19 +650,27 @@ public class MainActivity extends Activity {
         renderDock();
     }
 
-    private void appMenu(AppItem a) {
+    private void appMenu(final AppItem a) {
+        if (a == null) return;
         final List<String> pinned = getPinned();
         final boolean isPinned = pinned.contains(a.pkg);
         String[] items = {
-                isPinned ? "إلغاء التثبيت من الشريط" : "تثبيت في الشريط",
+                isPinned ? "إلغاء التثبيت من المفضلة" : "تثبيت في المفضلة (حتى 5)",
+                "تشغيل بملء الشاشة",
                 "معلومات التطبيق",
                 "حذف التطبيق"
         };
         new AlertDialog.Builder(this).setTitle(a.label).setItems(items, (d, which) -> {
             if (which == 0) {
-                if (isPinned) pinned.remove(a.pkg); else pinned.add(a.pkg);
+                if (isPinned) pinned.remove(a.pkg);
+                else if (pinned.size() >= MAX_PINNED) { toast("المفضلة محدودة بـ " + MAX_PINNED + " تطبيقات"); return; }
+                else pinned.add(a.pkg);
                 setPinned(pinned);
             } else if (which == 1) {
+                hideApps();
+                String err = WindowLauncher.launch(this, a, selectedDisplay, null);
+                if (err != null) toast("تعذر التشغيل: " + err);
+            } else if (which == 2) {
                 startSafely(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + a.pkg)));
             } else {
                 startSafely(new Intent(Intent.ACTION_DELETE, Uri.parse("package:" + a.pkg)));
@@ -473,73 +678,57 @@ public class MainActivity extends Activity {
         }).show();
     }
 
-    private void launch(AppItem a) {
-        Intent i = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-                .setClassName(a.pkg, a.cls)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
-        startSafely(i);
+    // ======================= الودجات =======================
+    private void showWidgets() {
+        String[] items = {"لوحة السيارة (سرعة · بطارية · وقود…)", "المزيد من الودجات — قريباً"};
+        new AlertDialog.Builder(this).setTitle("الودجات — للمنطقة " + (activeZone + 1))
+                .setItems(items, (d, which) -> {
+                    if (which == 0) {
+                        zoneContent[activeZone] = DASH;
+                        saveZones();
+                        renderZone(activeZone);
+                    } else {
+                        toast("سيتم دعم إضافة ودجات أخرى لاحقاً");
+                    }
+                }).show();
     }
 
-    private void launchPackage(String pkg) {
-        Intent i = getPackageManager().getLaunchIntentForPackage(pkg);
-        if (i == null) { toast("التطبيق غير مثبّت"); return; }
-        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        startSafely(i);
+    // ======================= الإعدادات =======================
+    private void showSettings() {
+        boolean bubble = prefs.getBoolean(KEY_BUBBLE, true), edge = prefs.getBoolean(KEY_EDGE, false);
+        String[] items = {
+                (bubble ? "☑" : "☐") + "  الأيقونة العائمة للوصول من أي شاشة",
+                (edge ? "☑" : "☐") + "  السحب من حافتي الشاشة لفتح Car Home",
+                "فحص قدرات النوافذ والشاشات",
+                pendingUpdate != null ? "⬆  تحديث متوفر — اضغط للتحديث" : "⟳  البحث عن تحديث"
+        };
+        new AlertDialog.Builder(this).setTitle("إعدادات Car Home").setItems(items, (d, which) -> {
+            if (which == 0 || which == 1) {
+                prefs.edit().putBoolean(which == 0 ? KEY_BUBBLE : KEY_EDGE, which == 0 ? !bubble : !edge).apply();
+                if (!Settings.canDrawOverlays(this)) {
+                    message("لا توجد صلاحية الظهور فوق التطبيقات.\nثبّت التطبيق من صفحة التثبيت بالكمبيوتر (تمنحها تلقائياً)، أو نفّذ:\n"
+                            + "appops set " + getPackageName() + " SYSTEM_ALERT_WINDOW allow");
+                } else {
+                    OverlayService.sync(this);
+                }
+                showSettings();
+            } else if (which == 2) {
+                message(WindowLauncher.capabilityReport(this));
+            } else {
+                onUpdateClicked();
+            }
+        }).show();
     }
 
+    // ======================= أدوات =======================
     private void startSafely(Intent i) {
         try { startActivity(i); } catch (Exception e) { toast("تعذر الفتح"); }
     }
 
     private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
 
-    // ======================= عرض القيم =======================
-    private static String gearName(Integer g) {
-        if (g == null) return "—";
-        switch (g) {
-            case 1: return "P";
-            case 2: return "R";
-            case 3: return "N";
-            case 4: return "D";
-            default: return String.valueOf(g);
-        }
-    }
-
-    private static int modeColor(Integer m) {
-        if (m == null) return 0xFF455A64;
-        switch (m) {
-            case 0: return 0xFF2E7D32;   // ECO
-            case 1: return 0xFF1E88E5;   // NORMAL
-            case 2: return 0xFFE53935;   // SPORT
-            default: return 0xFF6A1B9A;  // أخرى
-        }
-    }
-
-    private static String km(Float v) { return v == null ? "—" : Ui.num(v, 0) + " km"; }
-
-    private void render() {
-        Date now = new Date();
-        vClock.setText(timeFmt.format(now));
-        vDate.setText(dateFmt.format(now));
-
-        Live l = car.live;
-        Float speed = l.speedKmh;
-        vSpeed.setText(speed == null ? "—" : Ui.num(speed, 0));
-
-        boolean parked = l.gear != null && l.gear == 1;
-        vMode.setText(parked ? "PARK" : Live.modeName(l.driveMode));
-        vMode.setBackground(Ui.round(parked ? 0xFF1565C0 : modeColor(l.driveMode), Ui.dp(this, 12)));
-        vGear.setText(gearName(l.gear));
-        vSource.setText((l.engineOn ? "⛽ المحرك يعمل" : "⚡ كهرباء") + "\n" + l.source);
-
-        gBattery.setValue(l.socPct);
-        gFuel.setValue(l.fuelPct);
-        vEvRange.setText("المدى الكهربائي: " + km(l.evRangeKm));
-        vRange.setText("المدى الكلي: " + km(l.rangeKm));
-
-        vPower.setText(l.packKw == null ? "—" : Ui.num(l.packKw, 1));
-        vRpm.setText(l.rpm == null ? "—" : String.valueOf(l.rpm));
-        vOdo.setText(km(l.odometerKm));
+    private void message(String m) {
+        new AlertDialog.Builder(this).setMessage(m).setPositiveButton("حسناً", null).show();
     }
 
     // ======================= التحديث الذاتي =======================
@@ -547,13 +736,7 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             try {
                 Updater.Info i = Updater.fetchLatest();
-                if (i != null && i.code > Updater.installedCode(this)) {
-                    ui.post(() -> {
-                        pendingUpdate = i;
-                        updateBtn.setText("⬆  تحديث متوفر");
-                        updateBtn.setBackground(Ui.round(Ui.GOOD, Ui.dp(this, 14)));
-                    });
-                }
+                if (i != null && i.code > Updater.installedCode(this)) ui.post(() -> pendingUpdate = i);
             } catch (Exception ignored) { }
         }).start();
     }
@@ -562,11 +745,11 @@ public class MainActivity extends Activity {
         if (!getPackageManager().canRequestPackageInstalls()) {
             message("لكي يحدّث التطبيق نفسه يحتاج صلاحية تثبيت التطبيقات، وشاشة السيارة لا تعرض هذا الخيار في الإعدادات.\n\n"
                     + "ثبّت التطبيق مرة واحدة من صفحة التثبيت بالكمبيوتر (تمنحه الصلاحية تلقائياً):\n"
-                    + Updater.installPage() + "\n\nبعدها يعمل زر «تحديث» دائماً بدون كمبيوتر.");
+                    + Updater.installPage() + "\n\nبعدها يعمل التحديث دائماً بدون كمبيوتر.");
             return;
         }
         TextView status = Ui.text(this, "جاري البحث عن تحديث…", 18, Ui.TEXT, false);
-        status.setPadding(Ui.dp(this, 24), Ui.dp(this, 20), Ui.dp(this, 24), Ui.dp(this, 20));
+        status.setPadding(dp(24), dp(20), dp(24), dp(20));
         AlertDialog dlg = new AlertDialog.Builder(this).setView(status).setCancelable(false).show();
         new Thread(() -> {
             try {
@@ -574,11 +757,8 @@ public class MainActivity extends Activity {
                 long mine = Updater.installedCode(this);
                 ui.post(() -> {
                     dlg.dismiss();
-                    if (i == null || i.code <= mine) {
-                        message("لديك آخر نسخة ✅\n\nالنسخة الحالية: v" + Updater.installedName(this));
-                    } else {
-                        offerUpdate(i);
-                    }
+                    if (i == null || i.code <= mine) message("لديك آخر نسخة ✅\n\nالنسخة الحالية: v" + Updater.installedName(this));
+                    else offerUpdate(i);
                 });
             } catch (Exception e) {
                 ui.post(() -> { dlg.dismiss(); message("تعذر الاتصال بـ GitHub.\nتأكد من اتصال الشاشة بالإنترنت.\n\n" + e.getMessage()); });
@@ -590,8 +770,7 @@ public class MainActivity extends Activity {
         String notes = i.notes == null || i.notes.trim().isEmpty() ? "" : "\n\nما الجديد:\n" + i.notes.trim();
         new AlertDialog.Builder(this)
                 .setTitle("نسخة جديدة متوفرة")
-                .setMessage("النسخة الحالية: v" + Updater.installedName(this)
-                        + "\nالنسخة الجديدة: " + i.tag + notes)
+                .setMessage("النسخة الحالية: v" + Updater.installedName(this) + "\nالنسخة الجديدة: " + i.tag + notes)
                 .setPositiveButton("تحديث الآن", (d, w) -> install(i))
                 .setNegativeButton("لاحقاً", null)
                 .show();
@@ -599,7 +778,7 @@ public class MainActivity extends Activity {
 
     private void install(Updater.Info i) {
         TextView status = Ui.text(this, "جاري التحميل… 0%", 18, Ui.TEXT, false);
-        status.setPadding(Ui.dp(this, 24), Ui.dp(this, 20), Ui.dp(this, 24), Ui.dp(this, 20));
+        status.setPadding(dp(24), dp(20), dp(24), dp(20));
         AlertDialog dlg = new AlertDialog.Builder(this).setView(status).setCancelable(false).show();
         new Thread(() -> {
             try {
@@ -612,18 +791,10 @@ public class MainActivity extends Activity {
                                 : "جاري التحميل… " + (done / 1024) + " KB"));
                     }
                 });
-                ui.post(() -> {
-                    dlg.dismiss();
-                    updateBtn.setText("⟳  تحديث");
-                    updateBtn.setBackground(Ui.round(0xFF37474F, Ui.dp(this, 14)));
-                });
+                ui.post(dlg::dismiss);
             } catch (Exception e) {
                 ui.post(() -> { dlg.dismiss(); message("فشل التحميل:\n" + e.getMessage()); });
             }
         }).start();
-    }
-
-    private void message(String m) {
-        new AlertDialog.Builder(this).setMessage(m).setPositiveButton("حسناً", null).show();
     }
 }

@@ -1,0 +1,60 @@
+name: Build Car Home APK
+on: [push, workflow_dispatch]
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: '8.7' }
+      - name: Signing key
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+        run: |
+          if [ -n "$SIGNING_KEY" ]; then
+            echo "$SIGNING_KEY" | base64 -d > app/release.jks
+          else
+            echo "::warning::SIGNING_KEY secret not set - generating a temporary key. Each build gets a different key, so uninstall the old APK before installing a new build. Add the secret to enable in-place updates."
+            keytool -genkeypair -keystore app/release.jks -alias carhome -keyalg RSA -keysize 2048 -validity 36500 \
+              -storepass carhome-sign-2026 -keypass carhome-sign-2026 -dname "CN=Car Home"
+          fi
+      - run: gradle assembleRelease
+      - run: cp app/build/outputs/apk/release/app-release.apk CarHome.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CarHome-apk
+          path: CarHome.apk
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTES: ${{ github.event.head_commit.message }}
+        run: gh release create "build-${{ github.run_number }}" CarHome.apk --title "Car Home build ${{ github.run_number }}" --notes "$NOTES" --latest
+      # صفحة التثبيت (GitHub Pages): الصفحة + آخر APK + latest.json بالبصمة، من نفس المصدر فلا مشكلة CORS
+      - name: Build install page
+        run: |
+          cp CarHome.apk site/CarHome.apk
+          SHA=$(sha256sum CarHome.apk | cut -d' ' -f1)
+          SIZE=$(stat -c %s CarHome.apk)
+          printf '{"version_name":"1.0.%s","version_code":%s,"size":%s,"sha256":"%s","url":"CarHome.apk"}\n' \
+            "${{ github.run_number }}" "$((100 + ${{ github.run_number }}))" "$SIZE" "$SHA" > site/latest.json
+          cat site/latest.json
+      - continue-on-error: true
+        uses: actions/configure-pages@v5
+      - continue-on-error: true
+        uses: actions/upload-pages-artifact@v3
+        with: { path: site }
+      - id: pages
+        continue-on-error: true
+        uses: actions/deploy-pages@v4

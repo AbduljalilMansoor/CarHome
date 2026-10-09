@@ -10,6 +10,7 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.Rect;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
@@ -18,39 +19,41 @@ import android.os.HandlerThread;
 import android.os.Looper;
 import android.provider.Settings;
 import android.view.Gravity;
-import android.view.MotionEvent;
 import android.view.View;
+import android.view.WindowInsets;
 import android.widget.FrameLayout;
 import android.widget.GridLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.PopupMenu;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
-import java.util.Date;
 import java.util.List;
-import java.util.Locale;
 
 /**
- * Car Home — الشاشة الرئيسية:
- *  1) منطقتان (يمين/يسار) لتشغيل تطبيقين معاً، أو عرض لوحة السيارة المدمجة.
- *  2) زر «تعديل» لتغيير حجم المنطقتين بسحب الفاصل.
- *  3) شريط سفلي: اختيار الشاشة (Display) + التطبيقات المفضلة (حتى 5) + زر «التطبيقات» + الودجات + الإعدادات.
- *  4) يمكن فتحه من أي شاشة بالأيقونة العائمة أو السحب من الحافة (OverlayService).
+ * Car Home — الشاشة الرئيسية، أربعة أقسام:
+ *  1) شريط علوي: بيانات السيارة الحية والساعة.
+ *  2) منطقة يسار + 3) منطقة يمين (50:50 ثابتة): في كل منهما تطبيق مختلف، ويمكن تغييره في أي وقت.
+ *  4) شريط سفلي: اختيار الشاشة + 5 خانات مفضلة (+) + زر «التطبيقات» + الودجات + الإعدادات.
+ * ويمكن فتحه من أي شاشة بالأيقونة العائمة أو السحب من الحافة (OverlayService).
  */
 public class MainActivity extends Activity {
     static final String PREFS = "carhome";
-    static final String KEY_PINNED = "pinned", KEY_DISPLAY = "display", KEY_SPLIT = "split";
+    static final String KEY_PINNED = "pinned", KEY_DISPLAY = "display";
     static final String KEY_BUBBLE = "bubble", KEY_EDGE = "edge";
     static final String KEY_Z0 = "z0", KEY_Z1 = "z1", KEY_ZD0 = "zd0", KEY_ZD1 = "zd1";
+    static final String KEY_MT = "mt", KEY_MB = "mb";
     static final String NEW_TRIP_PKG = "com.newtrip.app";
-    static final String DASH = "dash";
-    static final int MAX_PINNED = 5;
+    static final int FAV_SLOTS = 5;
+    private static final int[] MARGIN_STEPS = {0, 30, 60, 90, 120, 160};
+    private static final String[] ZONE_NAMES = {"اليسار", "اليمين"};
+
+    // وضع صفحة التطبيقات
+    private static final int PICK_NONE = 0, PICK_ZONE = 1, PICK_FAV = 2;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
@@ -62,36 +65,33 @@ public class MainActivity extends Activity {
     private volatile boolean polling;
 
     // الحالة
-    private final String[] zoneContent = {DASH, ""};
+    private final String[] zoneContent = {"", ""};
     private final int[] zoneDisplay = {0, 0};
-    private int activeZone = 1;
-    private float split = 0.5f;
+    private int activeZone = 0;
     private int selectedDisplay = WindowLauncher.FRONT;
-    private boolean editMode;
     private long lastApply;
+    private int pickMode = PICK_NONE, pickIndex = -1;
 
     // واجهة
     private FrameLayout rootFrame, appsPage;
-    private LinearLayout zonesRow, dockRow;
+    private LinearLayout main, zonesRow, dockRow, appsCol;
+    private TopBar topBar;
     private final LinearLayout[] zoneCard = new LinearLayout[2];
     private final FrameLayout[] zoneBody = new FrameLayout[2];
     private final TextView[] zoneTitle = new TextView[2];
     private final ImageView[] zoneIcon = new ImageView[2];
-    private final Dashboard[] zoneDash = new Dashboard[2];
-    private TextView editBtn, displayBtn, vClock;
-    private LinearLayout divider;
+    private final TextView[] zoneChange = new TextView[2];
+    private final TextView[] zoneClose = new TextView[2];
+    private TextView displayBtn, appsTitle, appsHint;
     private GridLayout grid;
 
     private List<AppItem> apps = new ArrayList<>();
     private boolean appsDirty = true;
     private Updater.Info pendingUpdate;
 
-    private final SimpleDateFormat timeFmt = new SimpleDateFormat("HH:mm", Locale.getDefault());
-
     private final Runnable tick = new Runnable() {
         @Override public void run() {
-            vClock.setText(timeFmt.format(new Date()));
-            for (Dashboard d : zoneDash) if (d != null) d.render(car.live);
+            topBar.render(car.live);
             ui.postDelayed(this, 1000);
         }
     };
@@ -108,7 +108,7 @@ public class MainActivity extends Activity {
         super.onCreate(b);
         Updater.init(this);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        if (!prefs.contains(KEY_PINNED)) prefs.edit().putString(KEY_PINNED, NEW_TRIP_PKG).apply();
+        if (!prefs.contains(KEY_PINNED)) prefs.edit().putString(KEY_PINNED, NEW_TRIP_PKG + ",,,,").apply();
         loadState();
         car = new CarBridge();
 
@@ -116,12 +116,15 @@ public class MainActivity extends Activity {
         rootFrame.setBackgroundColor(Ui.BG);
         rootFrame.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
 
-        LinearLayout main = new LinearLayout(this);
+        topBar = new TopBar(this);
+        main = new LinearLayout(this);
         main.setOrientation(LinearLayout.VERTICAL);
-        main.setPadding(dp(12), dp(8), dp(12), dp(10));
-        main.addView(buildTopBar(), new LinearLayout.LayoutParams(-1, -2));
-        main.addView(buildZones(), new LinearLayout.LayoutParams(-1, 0, 1f));
+        main.addView(topBar.view, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout.LayoutParams zlp = new LinearLayout.LayoutParams(-1, 0, 1f);
+        zlp.topMargin = dp(8);
+        main.addView(buildZones(), zlp);
         main.addView(buildBottomBar(), new LinearLayout.LayoutParams(-1, -2));
+        applyMargins();
         rootFrame.addView(main, new FrameLayout.LayoutParams(-1, -1));
 
         appsPage = buildAppsPage();
@@ -137,6 +140,7 @@ public class MainActivity extends Activity {
         registerReceiver(pkgReceiver, f);
 
         renderZones();
+        renderDock();
         updateDisplayButton();
         loadApps();
         checkUpdateQuietly();
@@ -167,7 +171,7 @@ public class MainActivity extends Activity {
         car.release();
     }
 
-    /** زر Home أو الأيقونة العائمة: أغلق القوائم وأعد إظهار التطبيقات داخل المنطقتين. */
+    /** زر Home أو الأيقونة العائمة: أغلق القوائم وأعد إظهار تطبيقات الجانبين. */
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
@@ -182,20 +186,26 @@ public class MainActivity extends Activity {
 
     // ======================= الحالة المحفوظة =======================
     private void loadState() {
-        split = clamp(prefs.getFloat(KEY_SPLIT, 0.5f));
         selectedDisplay = prefs.getInt(KEY_DISPLAY, WindowLauncher.FRONT);
-        zoneContent[0] = prefs.getString(KEY_Z0, DASH);
-        zoneContent[1] = prefs.getString(KEY_Z1, "");
+        zoneContent[0] = cleanZone(prefs.getString(KEY_Z0, ""));
+        zoneContent[1] = cleanZone(prefs.getString(KEY_Z1, ""));
         zoneDisplay[0] = prefs.getInt(KEY_ZD0, 0);
         zoneDisplay[1] = prefs.getInt(KEY_ZD1, 0);
     }
+
+    /** نسخة سابقة كانت تحفظ "dash" للوحة السيارة (انتقلت الآن إلى الشريط العلوي). */
+    private static String cleanZone(String s) { return s == null || s.equals("dash") ? "" : s; }
 
     private void saveZones() {
         prefs.edit().putString(KEY_Z0, zoneContent[0]).putString(KEY_Z1, zoneContent[1])
                 .putInt(KEY_ZD0, zoneDisplay[0]).putInt(KEY_ZD1, zoneDisplay[1]).apply();
     }
 
-    private static float clamp(float v) { return Math.max(0.25f, Math.min(0.75f, v)); }
+    private void applyMargins() {
+        int mt = dp(prefs.getInt(KEY_MT, 0)), mb = dp(prefs.getInt(KEY_MB, 0));
+        main.setPadding(dp(12), dp(8) + mt, dp(12), dp(10) + mb);
+        if (appsCol != null) appsCol.setPadding(dp(20), dp(20) + mt, dp(20), dp(20) + mb);
+    }
 
     // ======================= قراءة السيارة =======================
     private void startPolling() {
@@ -222,41 +232,24 @@ public class MainActivity extends Activity {
         if (pollThread != null) { pollThread.quitSafely(); pollThread = null; }
     }
 
-    // ======================= الشريط العلوي =======================
-    private View buildTopBar() {
-        LinearLayout bar = Ui.row(this);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.addView(Ui.text(this, "⌂  Car Home", 18, Ui.MUTED, true), new LinearLayout.LayoutParams(0, -2, 1f));
-        vClock = Ui.text(this, "--:--", 22, Ui.TEXT, true);
-        bar.addView(vClock);
-        return bar;
-    }
-
-    // ======================= المنطقتان =======================
+    // ======================= المنطقتان (50:50 ثابتة) =======================
     private View buildZones() {
         zonesRow = new LinearLayout(this);
         zonesRow.setOrientation(LinearLayout.HORIZONTAL);
         zonesRow.setBaselineAligned(false);
-        zoneCard[0] = buildZone(0);
-        zoneCard[1] = buildZone(1);
-        divider = buildDivider();
-        zonesRow.addView(zoneCard[0], zoneLp(split));
-        zonesRow.addView(divider, new LinearLayout.LayoutParams(dp(76), -1));
-        zonesRow.addView(zoneCard[1], zoneLp(1f - split));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, 0, 1f);
-        zonesRow.setLayoutParams(lp);
+        for (int z = 0; z < 2; z++) {
+            zoneCard[z] = buildZone(z);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -1, 1f);
+            lp.setMargins(dp(4), 0, dp(4), 0);
+            zonesRow.addView(zoneCard[z], lp);
+        }
         return zonesRow;
-    }
-
-    private LinearLayout.LayoutParams zoneLp(float w) {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -1, w);
-        lp.setMargins(dp(4), 0, dp(4), 0);
-        return lp;
     }
 
     private LinearLayout buildZone(final int z) {
         LinearLayout card = Ui.card(this);
         card.setPadding(dp(10), dp(10), dp(10), dp(10));
+
         LinearLayout head = Ui.row(this);
         head.setGravity(Gravity.CENTER_VERTICAL);
         zoneIcon[z] = new ImageView(this);
@@ -265,10 +258,13 @@ public class MainActivity extends Activity {
         zoneTitle[z].setPadding(dp(8), 0, 0, 0);
         zoneTitle[z].setSingleLine(true);
         head.addView(zoneTitle[z], new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView x = Ui.text(this, "✕", 22, Ui.MUTED, true);
-        x.setPadding(dp(14), dp(2), dp(6), dp(2));
-        x.setOnClickListener(v -> { zoneContent[z] = ""; saveZones(); renderZone(z); });
-        head.addView(x);
+
+        zoneChange[z] = headButton("⇄  تغيير", Ui.EV);
+        zoneChange[z].setOnClickListener(v -> startPick(PICK_ZONE, z));
+        head.addView(zoneChange[z]);
+        zoneClose[z] = headButton("✕", Ui.MUTED);
+        zoneClose[z].setOnClickListener(v -> { zoneContent[z] = ""; saveZones(); renderZone(z); });
+        head.addView(zoneClose[z]);
         card.addView(head, new LinearLayout.LayoutParams(-1, -2));
 
         zoneBody[z] = new FrameLayout(this);
@@ -280,57 +276,10 @@ public class MainActivity extends Activity {
         return card;
     }
 
-    private LinearLayout buildDivider() {
-        LinearLayout d = new LinearLayout(this);
-        d.setOrientation(LinearLayout.VERTICAL);
-        d.setGravity(Gravity.CENTER);
-        d.setBackground(Ui.round(Ui.CARD, dp(16)));
-
-        View.OnTouchListener drag = (v, e) -> {
-            if (!editMode) return false;
-            int[] loc = new int[2];
-            zonesRow.getLocationOnScreen(loc);
-            if (e.getAction() == MotionEvent.ACTION_DOWN) return true;
-            if (e.getAction() == MotionEvent.ACTION_MOVE || e.getAction() == MotionEvent.ACTION_UP) {
-                split = clamp((e.getRawX() - loc[0]) / Math.max(1, zonesRow.getWidth()));
-                zoneCard[0].setLayoutParams(zoneLp(split));
-                zoneCard[1].setLayoutParams(zoneLp(1f - split));
-                if (e.getAction() == MotionEvent.ACTION_UP) {
-                    prefs.edit().putFloat(KEY_SPLIT, split).apply();
-                    ui.postDelayed(() -> { launchZone(0); launchZone(1); }, 250);   // بعد استقرار التخطيط
-                }
-                return true;
-            }
-            return true;
-        };
-
-        TextView up = Ui.text(this, "◀ ▶", 20, Ui.MUTED, true);
-        up.setGravity(Gravity.CENTER);
-        up.setOnTouchListener(drag);
-        d.addView(up, new LinearLayout.LayoutParams(-1, 0, 1f));
-
-        editBtn = Ui.text(this, "✎\nتعديل", 15, Ui.TEXT, true);
-        editBtn.setGravity(Gravity.CENTER);
-        editBtn.setBackground(Ui.round(Ui.CARD2, dp(14)));
-        editBtn.setPadding(dp(6), dp(14), dp(6), dp(14));
-        editBtn.setOnClickListener(v -> toggleEdit());
-        LinearLayout.LayoutParams elp = new LinearLayout.LayoutParams(-1, -2);
-        elp.setMargins(dp(6), dp(6), dp(6), dp(6));
-        d.addView(editBtn, elp);
-
-        TextView down = Ui.text(this, "◀ ▶", 20, Ui.MUTED, true);
-        down.setGravity(Gravity.CENTER);
-        down.setOnTouchListener(drag);
-        d.addView(down, new LinearLayout.LayoutParams(-1, 0, 1f));
-        return d;
-    }
-
-    private void toggleEdit() {
-        editMode = !editMode;
-        editBtn.setText(editMode ? "✓\nتم" : "✎\nتعديل");
-        editBtn.setBackground(Ui.round(editMode ? Ui.EV : Ui.CARD2, dp(14)));
-        divider.setBackground(Ui.round(editMode ? 0xFF1B3A52 : Ui.CARD, dp(16)));
-        if (editMode) toast("اسحب السهمين ◀ ▶ لتغيير حجم المنطقتين");
+    private TextView headButton(String label, int color) {
+        TextView t = Ui.text(this, label, 17, color, true);
+        t.setPadding(dp(14), dp(8), dp(10), dp(8));
+        return t;
     }
 
     private void setActive(int z) {
@@ -350,27 +299,32 @@ public class MainActivity extends Activity {
 
     private void renderZone(final int z) {
         zoneBody[z].removeAllViews();
-        zoneDash[z] = null;
         zoneIcon[z].setImageDrawable(null);
-        String c = zoneContent[z];
         highlightZones();
-        if (c.isEmpty()) {
-            zoneTitle[z].setText("المنطقة " + (z + 1));
-            LinearLayout col = centerColumn();
-            col.addView(Ui.text(this, "＋", 54, Ui.MUTED, true));
-            col.addView(Ui.text(this, "اختر تطبيقاً", 18, Ui.MUTED, false));
-            col.setOnClickListener(v -> { setActive(z); showApps(); });
-            zoneBody[z].addView(col, new FrameLayout.LayoutParams(-1, -1));
-        } else if (c.equals(DASH)) {
-            zoneTitle[z].setText("لوحة السيارة");
-            Dashboard d = new Dashboard(this);
-            zoneDash[z] = d;
-            d.render(car.live);
-            zoneBody[z].addView(d.view, new FrameLayout.LayoutParams(-1, -1));
+        String c = zoneContent[z];
+        boolean empty = c.isEmpty();
+        zoneChange[z].setVisibility(empty ? View.GONE : View.VISIBLE);
+        zoneClose[z].setVisibility(empty ? View.GONE : View.VISIBLE);
+
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setGravity(Gravity.CENTER);
+        col.setPadding(dp(16), dp(8), dp(16), dp(8));
+
+        if (empty) {
+            zoneTitle[z].setText("الجانب " + ZONE_NAMES[z]);
+            col.addView(Ui.text(this, "＋", 56, Ui.MUTED, true));
+            TextView t = Ui.text(this, "أضف تطبيقك المفضل", 20, Ui.TEXT, true);
+            t.setGravity(Gravity.CENTER);
+            col.addView(t);
+            TextView h = Ui.text(this, "اضغط هنا لاختيار تطبيق يعمل في هذا الجانب", 14, Ui.MUTED, false);
+            h.setGravity(Gravity.CENTER);
+            h.setPadding(0, dp(6), 0, 0);
+            col.addView(h);
+            col.setOnClickListener(v -> startPick(PICK_ZONE, z));
         } else {
             AppItem a = find(c);
             zoneTitle[z].setText(a == null ? c : a.label);
-            LinearLayout col = centerColumn();
             if (a != null) {
                 zoneIcon[z].setImageDrawable(a.icon);
                 ImageView big = new ImageView(this);
@@ -380,24 +334,18 @@ public class MainActivity extends Activity {
             boolean other = zoneDisplay[z] != WindowLauncher.FRONT;
             TextView t = Ui.text(this, other
                     ? "يعمل على " + WindowLauncher.displayLabel(zoneDisplay[z], null)
-                    : "التطبيق يعمل في هذه المنطقة\nاضغط لإعادة التشغيل", 16, Ui.MUTED, false);
+                    : "التطبيق يعمل في هذا الجانب\nاضغط لإعادة تشغيله هنا", 16, Ui.MUTED, false);
             t.setGravity(Gravity.CENTER);
             t.setPadding(0, dp(8), 0, 0);
             col.addView(t);
             col.setOnClickListener(v -> { setActive(z); launchZone(z); });
-            zoneBody[z].addView(col, new FrameLayout.LayoutParams(-1, -1));
         }
+        zoneBody[z].addView(col, new FrameLayout.LayoutParams(-1, -1));
     }
 
-    private LinearLayout centerColumn() {
-        LinearLayout col = new LinearLayout(this);
-        col.setOrientation(LinearLayout.VERTICAL);
-        col.setGravity(Gravity.CENTER);
-        return col;
-    }
-
-    /** تعيين تطبيق للمنطقة وتشغيله على الشاشة المختارة. */
+    /** تعيين تطبيق لجانب وتشغيله على الشاشة المختارة. */
     private void assign(int z, AppItem a) {
+        activeZone = z;
         zoneContent[z] = a.pkg;
         zoneDisplay[z] = selectedDisplay;
         saveZones();
@@ -407,7 +355,7 @@ public class MainActivity extends Activity {
 
     private void launchZone(final int z) {
         String c = zoneContent[z];
-        if (c.isEmpty() || c.equals(DASH)) return;
+        if (c.isEmpty()) return;
         final AppItem a = find(c);
         if (a == null) { toast("التطبيق غير مثبّت"); return; }
         final int d = zoneDisplay[z];
@@ -423,7 +371,7 @@ public class MainActivity extends Activity {
         });
     }
 
-    /** إعادة إظهار تطبيقات المنطقتين (بعد العودة من تطبيق آخر أو تغيير الحجم). */
+    /** إعادة إظهار تطبيقات الجانبين (عند العودة إلى Car Home). */
     private void applyZones() {
         long now = System.currentTimeMillis();
         if (now - lastApply < 1500) return;
@@ -440,8 +388,8 @@ public class MainActivity extends Activity {
 
         displayBtn = Ui.text(this, "", 16, Ui.TEXT, true);
         displayBtn.setBackground(Ui.round(Ui.CARD2, dp(14)));
-        displayBtn.setPadding(dp(16), dp(14), dp(16), dp(14));
-        displayBtn.setOnClickListener(v -> showDisplayMenu(v));
+        displayBtn.setPadding(dp(16), dp(16), dp(16), dp(16));
+        displayBtn.setOnClickListener(v -> showDisplayDialog());
         bar.addView(displayBtn, new LinearLayout.LayoutParams(-2, -2));
 
         dockRow = new LinearLayout(this);
@@ -450,21 +398,21 @@ public class MainActivity extends Activity {
         dockRow.setBackground(Ui.round(Ui.CARD, dp(18)));
         dockRow.setPadding(dp(8), dp(6), dp(8), dp(6));
         LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(0, -2, 1f);
-        dlp.setMargins(dp(12), 0, dp(12), 0);
+        dlp.setMargins(dp(10), 0, dp(10), 0);
         bar.addView(dockRow, dlp);
 
-        TextView gear = Ui.text(this, "⚙", 24, Ui.TEXT, true);
+        TextView gear = Ui.text(this, "⚙", 26, Ui.TEXT, true);
         gear.setGravity(Gravity.CENTER);
         gear.setBackground(Ui.round(Ui.CARD2, dp(14)));
         gear.setOnClickListener(v -> showSettings());
-        LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(dp(60), dp(60));
+        LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(dp(62), dp(62));
         glp.rightMargin = dp(8);
         bar.addView(gear, glp);
 
         TextView widgets = Ui.text(this, "▦  WIDGETS", 15, Ui.TEXT, true);
         widgets.setGravity(Gravity.CENTER);
         widgets.setBackground(Ui.round(Ui.CARD2, dp(14)));
-        widgets.setPadding(dp(16), dp(14), dp(16), dp(14));
+        widgets.setPadding(dp(16), dp(16), dp(16), dp(16));
         widgets.setOnClickListener(v -> showWidgets());
         bar.addView(widgets, new LinearLayout.LayoutParams(-2, -2));
         return bar;
@@ -475,74 +423,111 @@ public class MainActivity extends Activity {
                 : selectedDisplay == WindowLauncher.REAR ? " (Rear)" : ""));
     }
 
-    private void showDisplayMenu(View anchor) {
-        PopupMenu m = new PopupMenu(this, anchor);
-        m.getMenu().add(0, -1, 0, "اختر الشاشة التي يعمل عليها التطبيق").setEnabled(false);
-        for (int[] d : WindowLauncher.displays(this)) {
-            int id = d[0];
-            m.getMenu().add(0, id, id + 1, (id == selectedDisplay ? "✓  " : "     ")
-                    + WindowLauncher.displayLabel(id, null));
+    private void showDisplayDialog() {
+        final List<int[]> ds = WindowLauncher.displays(this);
+        String[] labels = new String[ds.size()];
+        int checked = 0;
+        for (int i = 0; i < ds.size(); i++) {
+            int id = ds.get(i)[0];
+            labels[i] = WindowLauncher.displayLabel(id, null);
+            if (id == selectedDisplay) checked = i;
         }
-        m.setOnMenuItemClickListener(item -> {
-            if (item.getItemId() >= 0) {
-                selectedDisplay = item.getItemId();
-                prefs.edit().putInt(KEY_DISPLAY, selectedDisplay).apply();
-                updateDisplayButton();
-            }
-            return true;
-        });
-        m.show();
+        new AlertDialog.Builder(this)
+                .setTitle("الشاشة التي يعمل عليها التطبيق")
+                .setSingleChoiceItems(labels, checked, (d, which) -> {
+                    selectedDisplay = ds.get(which)[0];
+                    prefs.edit().putInt(KEY_DISPLAY, selectedDisplay).apply();
+                    updateDisplayButton();
+                    d.dismiss();
+                })
+                .setNegativeButton("إلغاء", null)
+                .show();
+    }
+
+    // ---------- المفضلة: خمس خانات ثابتة ----------
+    private String[] getFavs() {
+        String[] f = new String[FAV_SLOTS];
+        Arrays.fill(f, "");
+        String[] p = prefs.getString(KEY_PINNED, "").split(",", -1);
+        for (int i = 0; i < FAV_SLOTS && i < p.length; i++) f[i] = p[i];
+        return f;
+    }
+
+    private void setFavs(String[] f) {
+        prefs.edit().putString(KEY_PINNED, String.join(",", f)).apply();
+        renderDock();
     }
 
     private void renderDock() {
         dockRow.removeAllViews();
-        int n = 0;
-        for (String pkg : getPinned()) {
-            AppItem a = find(pkg);
-            if (a == null || n >= MAX_PINNED) continue;
-            n++;
-            dockRow.addView(dockCell(a.icon, a.label, v -> assign(activeZone, a), a), dockLp());
+        String[] fav = getFavs();
+        for (int i = 0; i < FAV_SLOTS; i++) {
+            final int slot = i;
+            final AppItem a = fav[i].isEmpty() ? null : find(fav[i]);
+            LinearLayout cell = dockCell(a == null ? null : a.icon, a == null ? "إضافة" : a.label);
+            if (a == null) {
+                cell.setOnClickListener(v -> startPick(PICK_FAV, slot));
+            } else {
+                cell.setOnClickListener(v -> assign(activeZone, a));
+                cell.setOnLongClickListener(v -> { favMenu(slot, a); return true; });
+            }
+            dockRow.addView(cell, dockLp());
         }
-        TextView allIcon = Ui.text(this, "⊞", 32, Ui.TEXT, true);
-        allIcon.setGravity(Gravity.CENTER);
-        LinearLayout cell = new LinearLayout(this);
-        cell.setOrientation(LinearLayout.VERTICAL);
-        cell.setGravity(Gravity.CENTER_HORIZONTAL);
-        cell.setPadding(dp(10), dp(2), dp(10), dp(2));
-        cell.addView(allIcon, new LinearLayout.LayoutParams(dp(52), dp(52)));
-        TextView lbl = Ui.text(this, "التطبيقات", 12, Ui.MUTED, false);
-        lbl.setGravity(Gravity.CENTER);
-        cell.addView(lbl);
-        cell.setOnClickListener(v -> showApps());
-        dockRow.addView(cell, dockLp());
+        // زر كل التطبيقات
+        LinearLayout all = dockCell(null, "التطبيقات");
+        ((TextView) ((LinearLayout) all).getChildAt(0)).setText("⊞");
+        all.setOnClickListener(v -> startPick(PICK_NONE, -1));
+        dockRow.addView(all, dockLp());
     }
 
     private LinearLayout.LayoutParams dockLp() {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
-        lp.setMargins(dp(6), 0, dp(6), 0);
+        lp.setMargins(dp(8), 0, dp(8), 0);
         return lp;
     }
 
-    private View dockCell(android.graphics.drawable.Drawable icon, String label, View.OnClickListener click, AppItem a) {
+    /** خانة: أيقونة (أو علامة + إن لم يوجد) وتحتها اسم. الابن الأول دائماً الأيقونة. */
+    private LinearLayout dockCell(Drawable icon, String label) {
         LinearLayout cell = new LinearLayout(this);
         cell.setOrientation(LinearLayout.VERTICAL);
         cell.setGravity(Gravity.CENTER_HORIZONTAL);
-        cell.setPadding(dp(10), dp(2), dp(10), dp(2));
-        ImageView iv = new ImageView(this);
-        iv.setImageDrawable(icon);
-        cell.addView(iv, new LinearLayout.LayoutParams(dp(52), dp(52)));
+        cell.setPadding(dp(8), dp(2), dp(8), dp(2));
+        cell.setClickable(true);
+        View iconView;
+        if (icon != null) {
+            ImageView iv = new ImageView(this);
+            iv.setImageDrawable(icon);
+            iconView = iv;
+        } else {
+            TextView plus = Ui.text(this, "＋", 28, Ui.MUTED, true);
+            plus.setGravity(Gravity.CENTER);
+            plus.setBackground(Ui.round(Ui.CARD2, dp(14)));
+            iconView = plus;
+        }
+        cell.addView(iconView, new LinearLayout.LayoutParams(dp(52), dp(52)));
         TextView t = Ui.text(this, label, 12, Ui.MUTED, false);
         t.setGravity(Gravity.CENTER);
         t.setSingleLine(true);
-        t.setMaxWidth(dp(90));
+        t.setMaxWidth(dp(84));
         t.setEllipsize(android.text.TextUtils.TruncateAt.END);
         cell.addView(t);
-        cell.setOnClickListener(click);
-        cell.setOnLongClickListener(v -> { appMenu(a); return true; });
         return cell;
     }
 
-    // ======================= كل التطبيقات =======================
+    private void favMenu(final int slot, AppItem a) {
+        String[] items = {"تغيير التطبيق", "إزالة من المفضلة"};
+        new AlertDialog.Builder(this).setTitle(a.label).setItems(items, (d, which) -> {
+            if (which == 0) {
+                startPick(PICK_FAV, slot);
+            } else {
+                String[] f = getFavs();
+                f[slot] = "";
+                setFavs(f);
+            }
+        }).show();
+    }
+
+    // ======================= كل التطبيقات (وللاختيار) =======================
     private FrameLayout buildAppsPage() {
         FrameLayout page = new FrameLayout(this);
         page.setBackgroundColor(Ui.BG);
@@ -550,13 +535,16 @@ public class MainActivity extends Activity {
 
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        col.setPadding(dp(20), dp(20), dp(20), dp(20));
+        appsCol = col;
+        applyMargins();
 
         LinearLayout header = Ui.row(this);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.addView(Ui.text(this, "كل التطبيقات", 28, Ui.TEXT, true));
-        header.addView(Ui.text(this, "   اضغط لتشغيله في المنطقة المحددة · مطوّلاً للخيارات", 15, Ui.MUTED, false),
-                new LinearLayout.LayoutParams(0, -2, 1f));
+        appsTitle = Ui.text(this, "كل التطبيقات", 26, Ui.TEXT, true);
+        header.addView(appsTitle);
+        appsHint = Ui.text(this, "", 15, Ui.MUTED, false);
+        appsHint.setPadding(dp(14), 0, 0, 0);
+        header.addView(appsHint, new LinearLayout.LayoutParams(0, -2, 1f));
         TextView close = Ui.text(this, "✕", 32, Ui.TEXT, true);
         close.setGravity(Gravity.CENTER);
         close.setBackground(Ui.round(Ui.CARD2, dp(14)));
@@ -574,9 +562,42 @@ public class MainActivity extends Activity {
         return page;
     }
 
-    private void showApps() { appsPage.setVisibility(View.VISIBLE); }
+    private void startPick(int mode, int index) {
+        pickMode = mode;
+        pickIndex = index;
+        if (mode == PICK_ZONE) {
+            appsTitle.setText("اختر تطبيق الجانب " + ZONE_NAMES[index]);
+            appsHint.setText("اضغط على التطبيق ليعمل في هذا الجانب");
+        } else if (mode == PICK_FAV) {
+            appsTitle.setText("اختر تطبيقاً للمفضلة (خانة " + (index + 1) + ")");
+            appsHint.setText("اضغط على التطبيق لإضافته");
+        } else {
+            appsTitle.setText("كل التطبيقات");
+            appsHint.setText("اضغط ليعمل في الجانب المحدد (الإطار الأزرق) · مطوّلاً للخيارات");
+        }
+        appsPage.setVisibility(View.VISIBLE);
+    }
 
-    private void hideApps() { if (appsPage != null) appsPage.setVisibility(View.GONE); }
+    private void hideApps() {
+        if (appsPage != null) appsPage.setVisibility(View.GONE);
+        pickMode = PICK_NONE;
+        pickIndex = -1;
+    }
+
+    private void onAppChosen(AppItem a) {
+        int mode = pickMode, idx = pickIndex;
+        hideApps();
+        if (mode == PICK_ZONE) {
+            assign(idx, a);
+        } else if (mode == PICK_FAV) {
+            String[] f = getFavs();
+            for (int i = 0; i < f.length; i++) if (f[i].equals(a.pkg)) f[i] = "";   // بلا تكرار
+            f[idx] = a.pkg;
+            setFavs(f);
+        } else {
+            assign(activeZone, a);
+        }
+    }
 
     private void loadApps() {
         final PackageManager pm = getPackageManager();
@@ -626,7 +647,7 @@ public class MainActivity extends Activity {
             GridLayout.LayoutParams glp = new GridLayout.LayoutParams();
             glp.width = cell;
             c.setLayoutParams(glp);
-            c.setOnClickListener(v -> { hideApps(); assign(activeZone, a); });
+            c.setOnClickListener(v -> onAppChosen(a));
             c.setOnLongClickListener(v -> { appMenu(a); return true; });
             grid.addView(c);
         }
@@ -637,35 +658,25 @@ public class MainActivity extends Activity {
         return null;
     }
 
-    private List<String> getPinned() {
-        List<String> l = new ArrayList<>();
-        for (String x : prefs.getString(KEY_PINNED, "").split(",")) if (!x.isEmpty()) l.add(x);
-        return l;
-    }
-
-    private void setPinned(List<String> l) {
-        StringBuilder sb = new StringBuilder();
-        for (String x : l) { if (sb.length() > 0) sb.append(','); sb.append(x); }
-        prefs.edit().putString(KEY_PINNED, sb.toString()).apply();
-        renderDock();
-    }
-
     private void appMenu(final AppItem a) {
-        if (a == null) return;
-        final List<String> pinned = getPinned();
-        final boolean isPinned = pinned.contains(a.pkg);
+        final String[] fav = getFavs();
+        final int favIdx = Arrays.asList(fav).indexOf(a.pkg);
         String[] items = {
-                isPinned ? "إلغاء التثبيت من المفضلة" : "تثبيت في المفضلة (حتى 5)",
+                favIdx >= 0 ? "إزالة من المفضلة" : "إضافة إلى المفضلة",
                 "تشغيل بملء الشاشة",
                 "معلومات التطبيق",
                 "حذف التطبيق"
         };
         new AlertDialog.Builder(this).setTitle(a.label).setItems(items, (d, which) -> {
             if (which == 0) {
-                if (isPinned) pinned.remove(a.pkg);
-                else if (pinned.size() >= MAX_PINNED) { toast("المفضلة محدودة بـ " + MAX_PINNED + " تطبيقات"); return; }
-                else pinned.add(a.pkg);
-                setPinned(pinned);
+                if (favIdx >= 0) {
+                    fav[favIdx] = "";
+                } else {
+                    int empty = Arrays.asList(fav).indexOf("");
+                    if (empty < 0) { toast("المفضلة ممتلئة: أزل أو غيّر إحدى الخانات أولاً"); return; }
+                    fav[empty] = a.pkg;
+                }
+                setFavs(fav);
             } else if (which == 1) {
                 hideApps();
                 String err = WindowLauncher.launch(this, a, selectedDisplay, null);
@@ -680,26 +691,19 @@ public class MainActivity extends Activity {
 
     // ======================= الودجات =======================
     private void showWidgets() {
-        String[] items = {"لوحة السيارة (سرعة · بطارية · وقود…)", "المزيد من الودجات — قريباً"};
-        new AlertDialog.Builder(this).setTitle("الودجات — للمنطقة " + (activeZone + 1))
-                .setItems(items, (d, which) -> {
-                    if (which == 0) {
-                        zoneContent[activeZone] = DASH;
-                        saveZones();
-                        renderZone(activeZone);
-                    } else {
-                        toast("سيتم دعم إضافة ودجات أخرى لاحقاً");
-                    }
-                }).show();
+        message("الودجات الإضافية — قريباً\n\nبيانات السيارة تظهر دائماً في الشريط العلوي. "
+                + "هنا سنضيف لاحقاً ودجات أخرى (طقس، موسيقى، اختصارات…).");
     }
 
     // ======================= الإعدادات =======================
     private void showSettings() {
-        boolean bubble = prefs.getBoolean(KEY_BUBBLE, true), edge = prefs.getBoolean(KEY_EDGE, false);
+        final boolean bubble = prefs.getBoolean(KEY_BUBBLE, true), edge = prefs.getBoolean(KEY_EDGE, false);
         String[] items = {
                 (bubble ? "☑" : "☐") + "  الأيقونة العائمة للوصول من أي شاشة",
                 (edge ? "☑" : "☐") + "  السحب من حافتي الشاشة لفتح Car Home",
-                "فحص قدرات النوافذ والشاشات",
+                "الهامش السفلي: " + prefs.getInt(KEY_MB, 0) + " dp   (إن غطّى شريط السيارة الأزرار السفلية)",
+                "الهامش العلوي: " + prefs.getInt(KEY_MT, 0) + " dp",
+                "فحص قدرات النوافذ والشاشات والتخطيط",
                 pendingUpdate != null ? "⬆  تحديث متوفر — اضغط للتحديث" : "⟳  البحث عن تحديث"
         };
         new AlertDialog.Builder(this).setTitle("إعدادات Car Home").setItems(items, (d, which) -> {
@@ -713,11 +717,46 @@ public class MainActivity extends Activity {
                 }
                 showSettings();
             } else if (which == 2) {
-                message(WindowLauncher.capabilityReport(this));
+                pickMargin(KEY_MB, "الهامش السفلي");
+            } else if (which == 3) {
+                pickMargin(KEY_MT, "الهامش العلوي");
+            } else if (which == 4) {
+                message(WindowLauncher.capabilityReport(this) + layoutReport());
             } else {
                 onUpdateClicked();
             }
         }).show();
+    }
+
+    private void pickMargin(final String key, String title) {
+        String[] labels = new String[MARGIN_STEPS.length];
+        int checked = 0;
+        for (int i = 0; i < MARGIN_STEPS.length; i++) {
+            labels[i] = MARGIN_STEPS[i] + " dp";
+            if (MARGIN_STEPS[i] == prefs.getInt(key, 0)) checked = i;
+        }
+        new AlertDialog.Builder(this).setTitle(title).setSingleChoiceItems(labels, checked, (d, which) -> {
+            prefs.edit().putInt(key, MARGIN_STEPS[which]).apply();
+            applyMargins();
+            d.dismiss();
+            showSettings();
+        }).show();
+    }
+
+    /** مقاسات النافذة وهوامش النظام: تكشف إن كان شريط السيارة يغطي جزءاً من التطبيق. */
+    private String layoutReport() {
+        StringBuilder sb = new StringBuilder("\n\nالتخطيط:\n");
+        sb.append(" • نافذة Car Home: ").append(rootFrame.getWidth()).append('×').append(rootFrame.getHeight()).append(" px\n");
+        sb.append(" • الكثافة: ").append(getResources().getDisplayMetrics().density).append('\n');
+        WindowInsets wi = rootFrame.getRootWindowInsets();
+        if (wi != null) {
+            sb.append(" • هوامش النظام: أعلى ").append(wi.getSystemWindowInsetTop())
+                    .append(" · أسفل ").append(wi.getSystemWindowInsetBottom()).append('\n');
+        }
+        int[] loc = new int[2];
+        dockRow.getLocationOnScreen(loc);
+        sb.append(" • موضع شريط المفضلة: y=").append(loc[1]).append(" ارتفاع ").append(dockRow.getHeight()).append('\n');
+        return sb.toString();
     }
 
     // ======================= أدوات =======================

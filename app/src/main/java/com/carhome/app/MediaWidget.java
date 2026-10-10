@@ -24,7 +24,7 @@ final class MediaWidget extends Widget {
     private MediaController current;
     private boolean noAccess;
 
-    MediaWidget(android.app.Activity a) { super(a); }
+    MediaWidget(android.app.Activity a, CarBridge c) { super(a, c); }
 
     @Override String id() { return MEDIA; }
     @Override String title() { return "الوسائط"; }

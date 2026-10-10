@@ -14,6 +14,7 @@
   GRANTS.push({ label: 'الأيقونة العائمة والسحب من الحافة (الظهور فوق التطبيقات)', cmd: 'appops set ' + PKG + ' SYSTEM_ALERT_WINDOW allow' });
   GRANTS.push({ label: 'تشغيل تطبيقين معاً: السماح بالنوافذ الحرة', cmd: 'settings put global enable_freeform_support 1', optional: true });
   GRANTS.push({ label: 'تشغيل تطبيقين معاً: جعل التطبيقات قابلة لتغيير الحجم', cmd: 'settings put global force_resizable_activities 1', optional: true });
+  GRANTS.push({ label: 'تعديل إعدادات النوافذ من داخل التطبيق (زر تفعيل النوافذ الحرة)', cmd: 'pm grant ' + PKG + ' android.permission.WRITE_SECURE_SETTINGS', optional: true });
   GRANTS.push({ label: 'ودجت الوسائط: الوصول إلى جلسات التشغيل', cmd: 'cmd notification allow_listener ' + PKG + '/' + PKG + '.MediaListener', optional: true });
   GRANTS.push({ label: 'ودجت الطقس: موقع السيارة', cmd: 'pm grant ' + PKG + ' android.permission.ACCESS_FINE_LOCATION', optional: true });
   GRANTS.push({ label: 'الإشعارات', cmd: 'pm grant ' + PKG + ' android.permission.POST_NOTIFICATIONS', optional: true });

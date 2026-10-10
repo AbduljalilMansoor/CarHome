@@ -37,8 +37,8 @@ final class WeatherWidget extends Widget {
     private long lastFetch;
     private volatile boolean fetching;
 
-    WeatherWidget(android.app.Activity a) {
-        super(a);
+    WeatherWidget(android.app.Activity a, CarBridge c) {
+        super(a, c);
         prefs = a.getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE);
     }
 

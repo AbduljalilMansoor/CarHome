@@ -9,5 +9,6 @@ public class BootReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context ctx, Intent intent) {
         try { OverlayService.sync(ctx); } catch (Exception ignored) { }
+        try { BeltService.sync(ctx); } catch (Exception ignored) { }
     }
 }

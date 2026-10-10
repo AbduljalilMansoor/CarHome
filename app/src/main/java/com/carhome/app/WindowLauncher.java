@@ -58,6 +58,23 @@ final class WindowLauncher {
     }
 
     private static final String KEY_OPEN = "open";
+
+    /**
+     * يفعّل النوافذ الحرة ويجبر التطبيقات غير القابلة لتغيير الحجم على العمل داخل نافذة
+     * (بدونه تُفتح هذه التطبيقات بملء الشاشة وتغطي Car Home). يتطلب WRITE_SECURE_SETTINGS (يُمنح من صفحة التثبيت).
+     * @return null عند النجاح، وإلا سبب الفشل.
+     */
+    static String enableFreeform(Context c) {
+        try {
+            Settings.Global.putInt(c.getContentResolver(), "enable_freeform_support", 1);
+            Settings.Global.putInt(c.getContentResolver(), "force_resizable_activities", 1);
+            return null;
+        } catch (SecurityException e) {
+            return "no-permission";
+        } catch (Throwable t) {
+            return String.valueOf(t.getMessage());
+        }
+    }
     private static int cascade = 0;
 
     // ---------- تتبع التطبيقات التي فتحها Car Home وإغلاقها ----------

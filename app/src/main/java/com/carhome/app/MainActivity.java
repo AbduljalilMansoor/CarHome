@@ -145,6 +145,7 @@ public class MainActivity extends Activity {
         loadApps();
         checkUpdateQuietly();
         try { OverlayService.sync(this); } catch (Exception ignored) { }
+        try { BeltService.sync(this); } catch (Exception ignored) { }
     }
 
     @Override
@@ -322,7 +323,7 @@ public class MainActivity extends Activity {
                 big.setImageDrawable(a.icon);
                 col.addView(big, new LinearLayout.LayoutParams(dp(96), dp(96)));
             }
-            TextView t = Ui.text(this, "التطبيق يعمل في هذا الجانب\nاضغط لإعادة تشغيله هنا", 16, Ui.MUTED, false);
+            TextView t = Ui.text(this, "اضغط هنا لتشغيل التطبيق في هذا الجانب\n(أو لإعادة تشغيله)", 16, Ui.MUTED, false);
             t.setGravity(Gravity.CENTER);
             t.setPadding(0, dp(8), 0, 0);
             col.addView(t);
@@ -331,12 +332,32 @@ public class MainActivity extends Activity {
         zoneBody[z].addView(col, new FrameLayout.LayoutParams(-1, -1));
     }
 
-    /** تعيين تطبيق لجانب وتشغيله فيه (على الشاشة الأمامية). */
+    /** تعيين تطبيق لجانب (بدون تشغيله؛ يُشغَّل بالضغط على الجانب). ولا يجتمع مع المفضلة. */
     private void assign(int z, AppItem a) {
         zoneContent[z] = a.pkg;
+        String[] f = getFavs();
+        boolean moved = false;
+        for (int i = 0; i < f.length; i++) if (f[i].equals(a.pkg)) { f[i] = ""; moved = true; }
+        if (moved) setFavs(f);
         saveZones();
         renderZone(z);
-        launchZone(z);
+        toast(moved ? "نُقل التطبيق من المفضلة إلى الجانب " + ZONE_NAMES[z] + " — اضغط الجانب لتشغيله"
+                : "تم التعيين — اضغط الجانب لتشغيل التطبيق");
+    }
+
+    /** رقم الجانب الذي فيه التطبيق، أو -1. */
+    private int zoneOf(String pkg) {
+        for (int z = 0; z < 2; z++) if (zoneContent[z].equals(pkg)) return z;
+        return -1;
+    }
+
+    /** لا يُسمح بوضع تطبيق في المفضلة إن كان في أحد الجانبين. */
+    private boolean blockFavorite(AppItem a) {
+        int z = zoneOf(a.pkg);
+        if (z < 0) return false;
+        message("«" + a.label + "» مضاف في الجانب " + ZONE_NAMES[z] + " ولا يمكن وضعه في المفضلة أيضاً.\n\n"
+                + "أزله من الجانب أولاً (زر ✕) أو اختر تطبيقاً آخر.");
+        return true;
     }
 
     /** تشغيل تطبيق الجانب بطلب صريح من المستخدم فقط (بدون أي إعادة تشغيل تلقائية). */
@@ -369,7 +390,7 @@ public class MainActivity extends Activity {
         dockRow.setGravity(Gravity.CENTER);
         dockRow.setBackground(Ui.round(Ui.CARD, dp(18)));
         dockRow.setPadding(dp(6), dp(6), dp(6), dp(6));
-        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(0, -1, 5.4f);
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(0, dp(112), 5.4f);
         dlp.rightMargin = dp(8);
         bar.addView(dockRow, dlp);
 
@@ -378,7 +399,7 @@ public class MainActivity extends Activity {
         widgetRow.setGravity(Gravity.CENTER);
         widgetRow.setBackground(Ui.round(Ui.CARD, dp(18)));
         widgetRow.setPadding(dp(6), dp(6), dp(6), dp(6));
-        LinearLayout.LayoutParams wlp = new LinearLayout.LayoutParams(0, -1, 5.0f);
+        LinearLayout.LayoutParams wlp = new LinearLayout.LayoutParams(0, dp(112), 5.0f);
         wlp.rightMargin = dp(8);
         bar.addView(widgetRow, wlp);
 
@@ -458,8 +479,8 @@ public class MainActivity extends Activity {
             plus.setBackground(Ui.round(Ui.CARD2, dp(14)));
             iconView = plus;
         }
-        cell.addView(iconView, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        TextView t = Ui.text(this, label, 11, Ui.MUTED, false);
+        cell.addView(iconView, new LinearLayout.LayoutParams(dp(56), dp(56)));
+        TextView t = Ui.text(this, label, 12, Ui.MUTED, false);
         t.setGravity(Gravity.CENTER);
         t.setSingleLine(true);
         t.setEllipsize(android.text.TextUtils.TruncateAt.END);
@@ -501,7 +522,7 @@ public class MainActivity extends Activity {
         String[] slots = getWidgetSlots();
         for (int i = 0; i < WIDGET_SLOTS; i++) {
             final int slot = i;
-            Widget w = slots[i].isEmpty() ? null : Widget.create(slots[i], this);
+            Widget w = slots[i].isEmpty() ? null : Widget.create(slots[i], this, car);
             slotWidget[i] = w;
             LinearLayout.LayoutParams lp;
             if (w == null) {
@@ -543,7 +564,7 @@ public class MainActivity extends Activity {
         final String[] ids = Widget.ALL;
         String[] items = new String[ids.length];
         for (int i = 0; i < ids.length; i++) {
-            Widget w = Widget.create(ids[i], this);
+            Widget w = Widget.create(ids[i], this, car);
             items[i] = w.icon() + "  " + w.title() + "\n" + w.description();
         }
         new AlertDialog.Builder(this).setTitle("مكتبة الودجات")
@@ -558,7 +579,7 @@ public class MainActivity extends Activity {
         String[] cur = getWidgetSlots();
         String[] items = new String[WIDGET_SLOTS];
         for (int i = 0; i < WIDGET_SLOTS; i++) {
-            Widget w = cur[i].isEmpty() ? null : Widget.create(cur[i], this);
+            Widget w = cur[i].isEmpty() ? null : Widget.create(cur[i], this, car);
             items[i] = "الخانة " + (i + 1) + (w == null ? " — فارغة" : " — " + w.title());
         }
         new AlertDialog.Builder(this).setTitle("ضع الودجت في أي خانة؟")
@@ -632,6 +653,7 @@ public class MainActivity extends Activity {
 
     private void onAppChosen(AppItem a) {
         int mode = pickMode, idx = pickIndex;
+        if (mode == PICK_FAV && blockFavorite(a)) return;   // تبقى القائمة مفتوحة لاختيار تطبيق آخر
         hideApps();
         if (mode == PICK_ZONE) {
             assign(idx, a);
@@ -737,6 +759,7 @@ public class MainActivity extends Activity {
                 if (favIdx >= 0) {
                     fav[favIdx] = "";
                 } else {
+                    if (blockFavorite(a)) return;
                     int empty = Arrays.asList(fav).indexOf("");
                     if (empty < 0) { toast("المفضلة ممتلئة: أزل أو غيّر إحدى الخانات أولاً"); return; }
                     fav[empty] = a.pkg;
@@ -757,48 +780,69 @@ public class MainActivity extends Activity {
     }
 
     // ======================= الإعدادات =======================
+    private interface Act { void run(); }
+
     private void showSettings() {
         final boolean bubble = prefs.getBoolean(KEY_BUBBLE, true), edge = prefs.getBoolean(KEY_EDGE, false);
         final boolean windowed = prefs.getBoolean(KEY_WINDOW, true);
-        String[] items = {
-                (windowed ? "☑" : "☐") + "  فتح التطبيقات في نافذة جديدة (وإلا بملء الشاشة)",
-                (bubble ? "☑" : "☐") + "  الأيقونة العائمة (مطوّلاً عليها = إغلاق كل النوافذ)",
-                (edge ? "☑" : "☐") + "  السحب من حافتي الشاشة لفتح Car Home",
-                "إغلاق كل النوافذ والتطبيقات المفتوحة من Car Home",
-                "الهامش السفلي: " + prefs.getInt(KEY_MB, 0) + " dp   (إن غطّى شريط السيارة الأزرار السفلية)",
-                "الهامش العلوي: " + prefs.getInt(KEY_MT, 0) + " dp",
-                "فحص قدرات النوافذ والشاشات والتخطيط",
-                pendingUpdate != null ? "⬆  تحديث متوفر — اضغط للتحديث" : "⟳  البحث عن تحديث"
-        };
-        new AlertDialog.Builder(this).setTitle("إعدادات Car Home").setItems(items, (d, which) -> {
-            if (which == 0) {
-                prefs.edit().putBoolean(KEY_WINDOW, !windowed).apply();
-                showSettings();
-            } else if (which == 1 || which == 2) {
-                prefs.edit().putBoolean(which == 1 ? KEY_BUBBLE : KEY_EDGE, which == 1 ? !bubble : !edge).apply();
-                if (!Settings.canDrawOverlays(this)) {
-                    message("لا توجد صلاحية الظهور فوق التطبيقات.\nثبّت التطبيق من صفحة التثبيت بالكمبيوتر (تمنحها تلقائياً)، أو نفّذ:\n"
-                            + "appops set " + getPackageName() + " SYSTEM_ALERT_WINDOW allow");
-                } else {
-                    OverlayService.sync(this);
-                }
-                showSettings();
-            } else if (which == 3) {
-                zoneContent[0] = "";
-                zoneContent[1] = "";
-                saveZones();
-                renderZones();
-                WindowLauncher.closeAll(this);
-            } else if (which == 4) {
-                pickMargin(KEY_MB, "الهامش السفلي");
-            } else if (which == 5) {
-                pickMargin(KEY_MT, "الهامش العلوي");
-            } else if (which == 6) {
-                message(WindowLauncher.capabilityReport(this) + layoutReport());
+        final List<String> labels = new ArrayList<>();
+        final List<Act> actions = new ArrayList<>();
+
+        labels.add((windowed ? "☑" : "☐") + "  فتح التطبيقات في نافذة جديدة (وإلا بملء الشاشة)");
+        actions.add(() -> { prefs.edit().putBoolean(KEY_WINDOW, !windowed).apply(); showSettings(); });
+
+        labels.add((bubble ? "☑" : "☐") + "  الأيقونة العائمة (مطوّلاً عليها = إغلاق كل النوافذ)");
+        actions.add(() -> { toggleOverlay(KEY_BUBBLE, !bubble); showSettings(); });
+
+        labels.add((edge ? "☑" : "☐") + "  السحب من حافتي الشاشة لفتح Car Home");
+        actions.add(() -> { toggleOverlay(KEY_EDGE, !edge); showSettings(); });
+
+        labels.add("إغلاق كل النوافذ والتطبيقات المفتوحة من Car Home");
+        actions.add(() -> {
+            zoneContent[0] = "";
+            zoneContent[1] = "";
+            saveZones();
+            renderZones();
+            WindowLauncher.closeAll(this);
+        });
+
+        labels.add("تفعيل النوافذ الحرة وإجبار التطبيقات على تغيير الحجم (ثم أعد تشغيل السيارة)");
+        actions.add(() -> {
+            String err = WindowLauncher.enableFreeform(this);
+            if (err == null) {
+                message("تم الضبط ✅\nأعد تشغيل السيارة ليسري المفعول، ثم جرّب تشغيل تطبيق في الجانبين. "
+                        + "هذا يمنع التطبيقات غير القابلة لتغيير الحجم من فتح بملء الشاشة.");
             } else {
-                onUpdateClicked();
+                message("لا توجد صلاحية تعديل إعدادات النظام.\nثبّت التطبيق من صفحة التثبيت بالكمبيوتر (تمنحها تلقائياً)، أو نفّذ بـ ADB:\n"
+                        + "pm grant " + getPackageName() + " android.permission.WRITE_SECURE_SETTINGS\n"
+                        + "أو مباشرة:\nsettings put global enable_freeform_support 1\nsettings put global force_resizable_activities 1");
             }
-        }).show();
+        });
+
+        labels.add("الهامش السفلي: " + prefs.getInt(KEY_MB, 0) + " dp   (إن غطّى شريط السيارة الأزرار السفلية)");
+        actions.add(() -> pickMargin(KEY_MB, "الهامش السفلي"));
+
+        labels.add("الهامش العلوي: " + prefs.getInt(KEY_MT, 0) + " dp");
+        actions.add(() -> pickMargin(KEY_MT, "الهامش العلوي"));
+
+        labels.add("فحص قدرات النوافذ والشاشات والتخطيط");
+        actions.add(() -> message(WindowLauncher.capabilityReport(this) + layoutReport()));
+
+        labels.add(pendingUpdate != null ? "⬆  تحديث متوفر — اضغط للتحديث" : "⟳  البحث عن تحديث");
+        actions.add(this::onUpdateClicked);
+
+        new AlertDialog.Builder(this).setTitle("إعدادات Car Home")
+                .setItems(labels.toArray(new String[0]), (d, which) -> actions.get(which).run()).show();
+    }
+
+    private void toggleOverlay(String key, boolean value) {
+        prefs.edit().putBoolean(key, value).apply();
+        if (!Settings.canDrawOverlays(this)) {
+            message("لا توجد صلاحية الظهور فوق التطبيقات.\nثبّت التطبيق من صفحة التثبيت بالكمبيوتر (تمنحها تلقائياً)، أو نفّذ:\n"
+                    + "appops set " + getPackageName() + " SYSTEM_ALERT_WINDOW allow");
+        } else {
+            OverlayService.sync(this);
+        }
     }
 
     private void pickMargin(final String key, String title) {

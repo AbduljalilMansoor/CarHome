@@ -6,6 +6,7 @@ import android.util.Log;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -388,6 +389,38 @@ public final class CarBridge {
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    // ================= اكتشاف الإشارات وقراءتها بالاسم (لودجت حزام الأمان) =================
+    /** أسماء دوال القراءة (بلا معاملات، ترجع رقماً أو منطقياً) في مدير السيارة التي يحوي اسمها الكلمة المطلوبة. */
+    public List<String> findGetters(String keyword) {
+        List<String> out = new ArrayList<>();
+        Object c = al;
+        if (c == null || keyword == null || keyword.trim().isEmpty()) return out;
+        String k = keyword.trim().toUpperCase(java.util.Locale.ROOT);
+        for (Method m : c.getClass().getMethods()) {
+            String n = m.getName();
+            if (m.getParameterTypes().length != 0 || !n.startsWith("get")) continue;
+            if (!n.toUpperCase(java.util.Locale.ROOT).contains(k)) continue;
+            Class<?> r = m.getReturnType();
+            boolean numeric = Number.class.isAssignableFrom(r) || r == int.class || r == long.class || r == short.class
+                    || r == float.class || r == double.class || r == byte.class || r == boolean.class || r == Boolean.class;
+            if (numeric && !out.contains(n)) out.add(n);
+        }
+        Collections.sort(out);
+        return out;
+    }
+
+    /** قراءة قيمة إشارة بالاسم الكامل لدالتها (مثل getXXX): رقم، أو 1/0 للمنطقي، أو null إن تعذرت. */
+    public Double readGetter(String name) {
+        Object c = al;
+        if (c == null || name == null || name.isEmpty()) return null;
+        try {
+            Object v = c.getClass().getMethod(name).invoke(c);
+            if (v instanceof Number) return ((Number) v).doubleValue();
+            if (v instanceof Boolean) return ((Boolean) v) ? 1.0 : 0.0;
+        } catch (Throwable ignored) { }
+        return null;
     }
 
     private static Float range(Float v, float min, float max) {
